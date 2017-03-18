@@ -1,4 +1,4 @@
-/* This is an implementation of ensemble decoder for mantis, adapted from ensemble-decoder.{h,cc} of lamtram toolkit (https://github.com/neubig/lamtram).
+/* This is an implementation of ensemble decoder for Mantidae, adapted from ensemble-decoder.{h,cc} of lamtram toolkit (https://github.com/neubig/lamtram).
  * Adapted by Cong Duy Vu Hoang (duyvuleo@gmail.com, vhoang2@student.unimelb.edu.au) 
  */
 
