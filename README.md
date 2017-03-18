@@ -20,11 +20,11 @@ Before compiling Mantidae, you need:
 
 First, clone the repository
 
-    git clone https://bitbucket.org/duyvuleo/mantis-dev
+    git clone https://github.com/duyvuleo/Mantidae.git
 
-As mentioned above, you'll need the latest development version of eigen
+As mentioned above, you'll need the latest version of eigen (3.3.x or higher)
 
-    hg clone https://bitbucket.org/eigen/eigen/ -r 346ecdb
+    hg clone https://bitbucket.org/eigen/eigen/
 
 A modified version of dynet (https://github.com/clab/dynet/tree/master/dynet) is already included (e.g., dynet folder).
 
