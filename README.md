@@ -4,7 +4,7 @@ Mantidae is a successor of Mantis (https://github.com/trevorcohn/mantis), but wi
 
 ### Dependencies
 
-Before compiling dynet, you need:
+Before compiling Mantidae, you need:
 
  * [Eigen](https://bitbucket.org/eigen/eigen), using the development version (not release), e.g. 3.3.beta2 (http://bitbucket.org/eigen/eigen/get/3.3-beta2.tar.bz2)
 
@@ -13,6 +13,8 @@ Before compiling dynet, you need:
  * [boost](http://www.boost.org/), e.g., 1.58 using *libboost-all-dev* ubuntu package
 
  * [cmake](https://cmake.org/), e.g., 3.5.1 using *cmake* ubuntu package
+
+ * [dynet](https://github.com/clab/dynet). I myself modify some functions of dynet. So, dynet will be integrated inside Mantidae. You don't need to install it.
 
 ### Building
 
