@@ -10,6 +10,7 @@
  */
 #pragma once
 
+#include "dynet/globals.h"
 #include "dynet/nodes.h"
 #include "dynet/dynet.h"
 #include "dynet/training.h"

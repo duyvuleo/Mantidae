@@ -1,11 +1,10 @@
 #include "dynet/cfsm-builder.h"
+#include "dynet/except.h"
 
 #include <fstream>
 #include <iostream>
 
 #include <boost/serialization/vector.hpp>
-
-#include "dynet/io-macros.h"
 
 using namespace std;
 
@@ -54,12 +53,7 @@ Expression StandardSoftmaxBuilder::full_log_distribution(const Expression& rep) 
   return log(softmax(affine_transform({b, w, rep})));
 }
 
-template<class Archive>
-void StandardSoftmaxBuilder::serialize(Archive& ar, const unsigned int) {
-  ar & boost::serialization::base_object<SoftmaxBuilder>(*this);
-  ar & p_w;
-  ar & p_b;
-}
+DYNET_SERIALIZE_COMMIT(StandardSoftmaxBuilder, DYNET_SERIALIZE_DERIVED_DEFINE(SoftmaxBuilder, p_w, p_b))
 DYNET_SERIALIZE_IMPL(StandardSoftmaxBuilder)
 
 ClassFactoredSoftmaxBuilder::ClassFactoredSoftmaxBuilder() {}
@@ -98,9 +92,10 @@ void ClassFactoredSoftmaxBuilder::new_graph(ComputationGraph& cg) {
 }
 
 Expression ClassFactoredSoftmaxBuilder::neg_log_softmax(const Expression& rep, unsigned wordidx) {
-  // TODO assert that new_graph has been called
+  // TODO check that new_graph has been called
   int clusteridx = widx2cidx[wordidx];
-  assert(clusteridx >= 0);  // if this fails, wordid is missing from clusters
+  DYNET_ARG_CHECK(clusteridx >= 0,
+                          "Word ID " << wordidx << " missing from clusters in ClassFactoredSoftmaxBuilder::neg_log_softmax");
   Expression cscores = affine_transform({cbias, r2c, rep});
   Expression cnlp = pickneglogsoftmax(cscores, clusteridx);
   if (singleton_cluster[clusteridx]) return cnlp;
@@ -115,7 +110,7 @@ Expression ClassFactoredSoftmaxBuilder::neg_log_softmax(const Expression& rep, u
 }
 
 unsigned ClassFactoredSoftmaxBuilder::sample(const Expression& rep) {
-  // TODO assert that new_graph has been called
+  // TODO check that new_graph has been called
   Expression cscores = affine_transform({cbias, r2c, rep});
   Expression cdist_expr = softmax(cscores);
   auto cdist = as_vector(pcg->incremental_forward(cdist_expr));
@@ -181,7 +176,8 @@ Expression ClassFactoredSoftmaxBuilder::full_log_distribution(const Expression& 
 void ClassFactoredSoftmaxBuilder::read_cluster_file(const std::string& cluster_file, Dict& word_dict) {
   cerr << "Reading clusters from " << cluster_file << " ...\n";
   ifstream in(cluster_file);
-  assert(in);
+  if(!in)
+    DYNET_INVALID_ARG("Could not find cluster file " << cluster_file << " in ClassFactoredSoftmax");
   int wc = 0;
   string line;
   while(getline(in, line)) {
@@ -195,9 +191,8 @@ void ClassFactoredSoftmaxBuilder::read_cluster_file(const std::string& cluster_f
     while (is_ws(line[startw]) && startw < len) { ++startw; }
     unsigned endw = startw;
     while (not_ws(line[endw]) && endw < len) { ++endw; }
-    assert(endc > startc);
-    assert(startw > endc);
-    assert(endw > startw);
+    if(endc <= startc || startw <= endc || endw <= startw)
+      DYNET_INVALID_ARG("Invalid format in cluster file " << cluster_file << " in ClassFactoredSoftmax");
     unsigned c = cdict.convert(line.substr(startc, endc - startc));
     unsigned word = word_dict.convert(line.substr(startw, endw - startw));
     if (word >= widx2cidx.size()) {
@@ -220,20 +215,8 @@ void ClassFactoredSoftmaxBuilder::read_cluster_file(const std::string& cluster_f
   cerr << "Read " << wc << " words in " << cdict.size() << " clusters (" << scs << " singleton clusters)\n";
 }
 
-template<class Archive>
-void ClassFactoredSoftmaxBuilder::serialize(Archive& ar, const unsigned int) {
-  ar & boost::serialization::base_object<SoftmaxBuilder>(*this);
-  ar & cdict;
-  ar & widx2cidx;
-  ar & widx2cwidx;
-  ar & cidx2words;
-  ar & singleton_cluster;
-  ar & p_r2c;
-  ar & p_cbias;
-  ar & p_rc2ws;
-  ar & p_rcwbiases;
-}
-
+DYNET_SERIALIZE_COMMIT(ClassFactoredSoftmaxBuilder,
+		       DYNET_SERIALIZE_DERIVED_DEFINE(SoftmaxBuilder, cdict, widx2cidx, widx2cwidx, cidx2words, singleton_cluster, p_r2c, p_cbias, p_rc2ws, p_rcwbiases))
 
 void ClassFactoredSoftmaxBuilder::initialize_expressions() {
   for (unsigned c = 0; c < p_rc2ws.size(); ++c) {

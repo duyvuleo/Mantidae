@@ -1,16 +1,9 @@
 #include "dynet/rnn.h"
-#include "dynet/io-macros.h"
 
 #include <string>
-#include <cassert>
 #include <vector>
 #include <fstream>
 #include <iostream>
-#include <boost/archive/binary_oarchive.hpp>
-#include <boost/archive/binary_iarchive.hpp>
-#include <boost/serialization/access.hpp>
-#include <boost/serialization/vector.hpp>
-
 
 #include "dynet/nodes.h"
 #include "dynet/expr.h"
@@ -33,13 +26,7 @@ void RNNBuilder::load_parameters_pretraining(const string& fname) {
   throw std::runtime_error("RNNBuilder::load_parameters_pretraining not overridden.");
 }
 
-template<class Archive>
-void RNNBuilder::serialize(Archive& ar, const unsigned int) {
-  ar & cur;
-  ar & head;
-  ar & sm;
-} 
-
+DYNET_SERIALIZE_COMMIT(RNNBuilder, DYNET_SERIALIZE_DEFINE(cur, head, sm))
 DYNET_SERIALIZE_IMPL(RNNBuilder)
 
 SimpleRNNBuilder::SimpleRNNBuilder(unsigned layers,
@@ -85,11 +72,13 @@ void SimpleRNNBuilder::new_graph_impl(ComputationGraph& cg) {
 void SimpleRNNBuilder::start_new_sequence_impl(const vector<Expression>& h_0) {
   h.clear();
   h0 = h_0;
-  if (h0.size()) { assert(h0.size() == layers); }
+  DYNET_ARG_CHECK(h0.empty() || h0.size() == layers,
+                          "Number of inputs passed to initialize RNNBuilder (" << h0.size() << ") is not equal to the number of layers (" << layers << ")");
 }
 
 Expression SimpleRNNBuilder::set_h_impl(int prev, const vector<Expression>& h_new) {
-  if (h_new.size()) { assert(h_new.size() == layers); }
+  DYNET_ARG_CHECK(h_new.empty() || h_new.size() == layers,
+                          "Number of inputs passed to RNNBuilder::set_h() (" << h_new.size() << ") is not equal to the number of layers (" << layers << ")");
   const unsigned t = h.size();
   h.push_back(vector<Expression>(layers));
   for (unsigned i = 0; i < layers; ++i) {
@@ -131,7 +120,7 @@ Expression SimpleRNNBuilder::add_auxiliary_input(const Expression &in, const Exp
 
   for (unsigned i = 0; i < layers; ++i) {
     const vector<Expression>& vars = param_vars[i];
-    assert(vars.size() >= L2H + 1);
+    DYNET_ASSERT(vars.size() >= L2H + 1, "Failed dimension check in SimpleRNNBuilder");
 
     if(t > 0) {
       x = h[t][i] = tanh( affine_transform({vars[HB], vars[X2H], x, vars[L2H], aux, vars[H2H], h[t-1][i]}) );
@@ -147,18 +136,20 @@ Expression SimpleRNNBuilder::add_auxiliary_input(const Expression &in, const Exp
 
 void SimpleRNNBuilder::copy(const RNNBuilder & rnn) {
   const SimpleRNNBuilder & rnn_simple = (const SimpleRNNBuilder&)rnn;
-  assert(params.size() == rnn_simple.params.size());
+  DYNET_ARG_CHECK(params.size() == rnn_simple.params.size(),
+                          "Attempt to copy between two SimpleRNNBuilders that are not the same size");
   for(size_t i = 0; i < rnn_simple.params.size(); ++i) {
-      params[i][0] = rnn_simple.params[i][0];
-      params[i][1] = rnn_simple.params[i][1];
-      params[i][2] = rnn_simple.params[i][2];
+    params[i][0] = rnn_simple.params[i][0];
+    params[i][1] = rnn_simple.params[i][1];
+    params[i][2] = rnn_simple.params[i][2];
   }
 }
 
 void SimpleRNNBuilder::save_parameters_pretraining(const string& fname) const {
   cerr << "Writing parameters to " << fname << endl;
   ofstream of(fname);
-  assert(of);
+  if (!of)
+    DYNET_INVALID_ARG("Could not write parameters to " << fname << " in SimpleRNNBuilder");
   boost::archive::binary_oarchive oa(of);
   std::string id = "SimpleRNNBuilder:params";
   oa << id;
@@ -173,20 +164,17 @@ void SimpleRNNBuilder::save_parameters_pretraining(const string& fname) const {
 void SimpleRNNBuilder::load_parameters_pretraining(const string& fname) {
   cerr << "Loading parameters from " << fname << endl;
   ifstream of(fname);
-  assert(of);
+  if (!of)
+    DYNET_INVALID_ARG("Could not load parameters from " << fname << " in SimpleRNNBuilder");
   boost::archive::binary_iarchive ia(of);
   std::string id;
   ia >> id;
-  if (id != "SimpleRNNBuilder:params") {
-    cerr << "Bad id read\n";
-    abort();
-  }
+  if (id != "SimpleRNNBuilder:params")
+    throw std::invalid_argument("Bad id read in SimpleRNNBuilder::load_parameters_pretraining. Bad model format?");
   unsigned l = 0;
   ia >> l;
-  if (l != layers) {
-    cerr << "Bad number of layers\n";
-    abort();
-  }
+  if (l != layers)
+    throw std::invalid_argument("Bad number of layers in SimpleRNNBuilder::load_parameters_pretraining. Bad model format?");
   // TODO check other dimensions
   for (unsigned i = 0; i < layers; ++i) {
     for (auto p : params[i]) {
@@ -195,13 +183,7 @@ void SimpleRNNBuilder::load_parameters_pretraining(const string& fname) {
   }
 }
 
-template<class Archive>
-void SimpleRNNBuilder::serialize(Archive& ar, const unsigned int) {
-  ar & boost::serialization::base_object<RNNBuilder>(*this);
-  ar & params;
-  ar & layers;
-  ar & lagging;
-}
+DYNET_SERIALIZE_COMMIT(SimpleRNNBuilder, DYNET_SERIALIZE_DERIVED_DEFINE(RNNBuilder, params, layers, lagging))
 DYNET_SERIALIZE_IMPL(SimpleRNNBuilder)
 
 } // namespace dynet

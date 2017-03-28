@@ -1240,7 +1240,10 @@ Corpus Read_Corpus(const string &filename, bool doco, bool cid, unsigned slen, b
 		++lc;
 	}
 
-	cerr << lc << " lines, " << stoks << " & " << ttoks << " tokens (s & t), " << sd.size() << " & " << td.size() << " types\n";
+	if (cid)
+		cerr << lc << " lines, " << stoks << " & " << ttoks << " tokens (s & t), " << sd.size() << " & " << td.size() << " types\n";
+	else 
+		cerr << lc << " lines, " << stoks << " & " << ttoks << " tokens (s & t)\n" ;
 	return corpus;
 }
 

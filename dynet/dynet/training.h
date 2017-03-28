@@ -18,6 +18,7 @@
 
 #include "dynet/model.h"
 #include "dynet/shadow-params.h"
+#include "dynet/io-macros.h"
 
 #define DYNET_TRAINER_DEFINE_DEV_IMPL() \
   void update_params(real scale, real gscale, size_t idx) override; \
@@ -49,15 +50,8 @@ struct Trainer {
     clips(), updates(), clips_since_status(), updates_since_status(), sparse_updates_enabled(true), aux_allocated(false), model(&m) {}
   virtual ~Trainer();
 
-  void update(real scale = 1.0);
-
-  void update_epoch(real r = 1) {
-    epoch += r;
-    eta = eta0 / (1 + epoch * eta_decay);
-  }
-
   // -----------------------------------------------------------------------------------
-  // by Cong Duy Vu Hoang (vhoang2@student.unimelb.edu.au)
+  // added by Cong Duy Vu Hoang (vhoang2@student.unimelb.edu.au)
   void update_epoch_only(real r = 1.0){
     epoch += r;
   }
@@ -75,8 +69,42 @@ struct Trainer {
   }
   // -----------------------------------------------------------------------------------
 
-  // if clipping is enabled and the gradient is too big, return the amount to
-  // scale the gradient by (otherwise 1)
+  /**
+   * \brief Update parameters
+   * \details Update the parameters according to the appropriate update rule
+   * 
+   * \param scale The scaling factor for the gradients
+   */
+  void update(real scale = 1.0);
+
+  /**
+   * \brief Update subset of parameters
+   * \details Update some but not all of the parameters included in the model. This
+   *        is the update_subset() function in the Python bindings. The
+   *        parameters to be updated are specified by index, which can be found
+   *        for Parameter and LookupParameter objects through the "index" variable
+   *        (or the get_index() function in the Python bindings).
+   * 
+   * \param updated_params The parameter indices to be updated
+   * \param updated_lookup_params The lookup parameter indices to be updated
+   * \param scale The scaling factor for the gradients
+   */
+  void update(const std::vector<unsigned> & updated_params, const std::vector<unsigned> & updated_lookup_params, real scale = 1.0);
+
+  void update_epoch(real r = 1) {
+    epoch += r;
+    eta = eta0 / (1 + epoch * eta_decay);
+  }
+
+  /**
+   * \brief Clip gradient
+   * \details If clipping is enabled and the gradient is too big, return the amount to
+   *          scale the gradient by (otherwise 1)
+   *
+   * 
+   * \param scale The clipping limit
+   * \return The appropriate scaling factor
+   */
   float clip_gradients(real scale);
 
   // TODO: This is unprotected temporarily until there is a better solution
@@ -159,9 +187,7 @@ struct Trainer {
   virtual void update_lookup_params(real scale, real gscale, size_t idx) = 0;
 
  private:
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -187,9 +213,7 @@ struct SimpleSGDTrainer : public Trainer {
   DYNET_TRAINER_DEFINE_DEV_IMPL()
  private:
   SimpleSGDTrainer() {}
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -227,9 +251,7 @@ struct MomentumSGDTrainer : public Trainer {
   //std::unordered_map<LookupParameterStorage*, std::unordered_map<unsigned, Tensor>> vl;
  private:
   MomentumSGDTrainer() {}
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -262,9 +284,7 @@ struct AdagradTrainer : public Trainer {
   std::vector<ShadowLookupParameters> vlp;
  private:
   AdagradTrainer() {}
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -302,9 +322,7 @@ struct AdadeltaTrainer : public Trainer {
   std::vector<ShadowLookupParameters> hld;
  private:
   AdadeltaTrainer() {}
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -338,9 +356,7 @@ struct RmsPropTrainer : public Trainer {
   std::vector<std::vector<real> > hlg;
  private:
   RmsPropTrainer() {}
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -380,12 +396,10 @@ struct AdamTrainer : public Trainer {
   std::vector<ShadowLookupParameters> lv;
  private:
   AdamTrainer() {}
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
-//Written by Cong Duy Vu Hoang
+// Written by Cong Duy Vu Hoang
 /**
  * \ingroup optimizers
  * 
@@ -413,13 +427,10 @@ protected:
 
  private:
   AdaptiveEGTrainer() {}
-
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
-//Written by Cong Duy Vu Hoang
+// Written by Cong Duy Vu Hoang
 /**
  * \ingroup optimizers
  * 
@@ -437,15 +448,12 @@ struct EGTrainer : public Trainer {
   virtual void alloc_impl() override;
 
   real momentum;// with momentum
-
   std::vector<ShadowParameters> hp; // (previous) history of parameters
   std::vector<ShadowLookupParameters> hlp;
 
  private:
   EGTrainer() {}
-  friend class boost::serialization::access;
-  template<class Archive>
-  void serialize(Archive& ar, const unsigned int);
+  DYNET_SERIALIZE_DECLARE()
 };
 
 } // namespace dynet

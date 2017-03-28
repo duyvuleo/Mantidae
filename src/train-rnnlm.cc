@@ -133,7 +133,9 @@ int main(int argc, char** argv) {
 			&& !(vm.count("test") == 0))) {
 		cout << opts << "\n";
 			return 1;
-		}
+	}
+
+	cerr << "PID=" << ::getpid() << endl;
 	
 	if (vm.count("lstm"))
 		return main_body<LSTMBuilder>(vm);
@@ -372,6 +374,8 @@ void TrainModel(Model &model, RNNLM_t &rnn
 			timer_iteration.Reset();
 		}
 	}	
+
+	cerr << endl << "Training completed!" << endl;
 }
 
 //Note: This version works increasingly worse when batch_size > 16.
@@ -500,6 +504,8 @@ void TrainModel_Batch1(Model &model, RNNLM_t &rnn
 			timer_iteration.Reset();
 		}
 	}	
+
+	cerr << endl << "Training completed!" << endl;
 }
 
 // --------------------------------------------------------------------------------------------------------------------------------
@@ -666,7 +672,9 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 		timer_iteration.Show();
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 		timer_iteration.Reset();
-	}		
+	}	
+
+	cerr << endl << "Training completed!" << endl;	
 }
 
 Corpus Read_Corpus(const string &fp, bool dir)

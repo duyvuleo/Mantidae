@@ -2,18 +2,7 @@
 
 #include <fstream>
 #include <iostream>
-#include <cassert>
 #include <sstream>
-
-#include <boost/serialization/vector.hpp>
-#if BOOST_VERSION >= 105600
-#include <boost/serialization/unordered_map.hpp>
-#endif
-
-#include "dynet/io-macros.h"
-
-#undef assert
-#define assert(x) {}
 
 using namespace std;
 
@@ -31,8 +20,6 @@ void Cluster::new_graph(ComputationGraph& cg) {
 }
 
 Cluster* Cluster::add_child(unsigned sym) {
-  assert (!initialized);
-  assert (terminals.size() == 0);
   auto it = word2ind.find(sym);
   unsigned i;
   if (it == word2ind.end()) {
@@ -43,7 +30,6 @@ Cluster* Cluster::add_child(unsigned sym) {
     i = children.size();
     word2ind.insert(make_pair(sym, i));
     children.push_back(c);
-    assert (c != NULL);
   }
   else {
     i = it->second;
@@ -52,8 +38,6 @@ Cluster* Cluster::add_child(unsigned sym) {
 }
 
 void Cluster::add_word(unsigned word) {
-  assert (!initialized);
-  assert (children.size() == 0);
   word2ind[word] = terminals.size();
   terminals.push_back(word);
 }
@@ -64,9 +48,7 @@ void Cluster::initialize(unsigned rep_dim, Model& model) {
 }
 
 void Cluster::initialize(Model& model) {
-  assert (!initialized);
   output_size = (children.size() > 0) ? children.size() : terminals.size();
-  assert (output_size > 0);
 
   if (output_size == 1) {
   }
@@ -89,8 +71,6 @@ unsigned Cluster::num_children() const {
 }
 
 const Cluster* Cluster::get_child(unsigned i) const {
-  assert (i < children.size());
-  assert (children[i] != NULL);
   return children[i];
 }
 
@@ -115,7 +95,6 @@ Expression Cluster::neg_log_softmax(Expression h, unsigned r, ComputationGraph& 
   }
   else if (output_size == 2) {
     Expression p = logistic(predict(h, cg));
-    assert (r == 0 || r == 1);
     if (r == 1) {
       p = 1 - p;
     }
@@ -183,18 +162,14 @@ string Cluster::toString() const {
   return ss.str();
 }
 
-template<class Archive>
-void Cluster::serialize(Archive& ar, const unsigned int) {
-#if BOOST_VERSION >= 105600  
-  ar & rep_dim;
-  ar & children;
-  ar & path;
-  ar & terminals;
-  ar & word2ind;
+#if BOOST_VERSION >= 105600
+  DYNET_SERIALIZE_COMMIT(Cluster, DYNET_SERIALIZE_DEFINE(rep_dim, children, path, terminals, word2ind))
 #else
-  throw std::invalid_argument("Serializing clusters is only supported on versions of boost 1.56 or higher");
+  template<class Archive>
+  void Cluster::serialize(Archive& ar, const unsigned int) {
+    DYNET_RUNTIME_ERR("Serializing clusters is only supported on versions of boost 1.56 or higher");
+  }
 #endif
-}
 DYNET_SERIALIZE_IMPL(Cluster)
 
 HierarchicalSoftmaxBuilder::HierarchicalSoftmaxBuilder(unsigned rep_dim,
@@ -218,12 +193,13 @@ void HierarchicalSoftmaxBuilder::new_graph(ComputationGraph& cg) {
 }
 
 Expression HierarchicalSoftmaxBuilder::neg_log_softmax(const Expression& rep, unsigned wordidx) {
-  assert (pcg != NULL && "You must call new_graph before calling neg_log_softmax!");
+  if(pcg != NULL)
+    DYNET_INVALID_ARG("In HierarchicalSoftmaxBuilder, you must call new_graph before calling neg_log_softmax!");
   Cluster* path = widx2path[wordidx];
 
   unsigned i = 0;
   const Cluster* node = root;
-  assert (root != NULL);
+  DYNET_ASSERT(root != NULL, "Null root in HierarchicalSoftmaxBuilder");
   vector<Expression> log_probs;
   Expression lp;
   unsigned r;
@@ -232,7 +208,7 @@ Expression HierarchicalSoftmaxBuilder::neg_log_softmax(const Expression& rep, un
     lp = node->neg_log_softmax(rep, r, *pcg);
     log_probs.push_back(lp);
     node = node->get_child(r);
-    assert (node != NULL);
+    DYNET_ASSERT(node != NULL, "Null node in HierarchicalSoftmaxBuilder");
     i += 1;
   }
 
@@ -244,7 +220,8 @@ Expression HierarchicalSoftmaxBuilder::neg_log_softmax(const Expression& rep, un
 }
 
 unsigned HierarchicalSoftmaxBuilder::sample(const expr::Expression& rep) {
-  assert (pcg != NULL && "You must call new_graph before calling sample!");
+  if(pcg != NULL)
+    DYNET_INVALID_ARG("In HierarchicalSoftmaxBuilder, you must call new_graph before calling sample!");
 
   const Cluster* node = root;
   vector<float> dist;
@@ -259,7 +236,7 @@ unsigned HierarchicalSoftmaxBuilder::sample(const expr::Expression& rep) {
 }
 
 Expression HierarchicalSoftmaxBuilder::full_log_distribution(const Expression& rep) {
-  assert (false && "full_distribution not implemented for HierarchicalSoftmaxBuilder");
+  DYNET_RUNTIME_ERR("full_distribution not implemented for HierarchicalSoftmaxBuilder");
   return dynet::expr::Expression();
 }
 
@@ -269,7 +246,8 @@ inline bool not_ws(char x) { return (x != ' ' && x != '\t'); }
 Cluster* HierarchicalSoftmaxBuilder::read_cluster_file(const std::string& cluster_file, Dict& word_dict) {
   cerr << "Reading clusters from " << cluster_file << " ...\n";
   ifstream in(cluster_file);
-  assert(in);
+  if(!in)
+    DYNET_INVALID_ARG("HierarchicalSoftmaxBuilder couldn't read clusters from " << cluster_file);
   int wc = 0;
   string line;
   vector<unsigned> path;
@@ -303,9 +281,8 @@ Cluster* HierarchicalSoftmaxBuilder::read_cluster_file(const std::string& cluste
     while (is_ws(line[startw]) && startw < len) { ++startw; }
     unsigned endw = startw;
     while (not_ws(line[endw]) && endw < len) { ++endw; }
-    assert(endp > startp);
-    assert(startw > endp);
-    assert(endw > startw);
+    if(endp <= startp || startw <= endp || endw <= startw)
+      DYNET_INVALID_ARG("File formatting error in HierarchicalSoftmaxBuilder");
 
     string word = line.substr(startw, endw - startw);
     unsigned widx = word_dict.convert(word);

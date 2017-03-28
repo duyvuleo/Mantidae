@@ -1,5 +1,4 @@
 #include <string>
-#include <cassert>
 #include <vector>
 #include <iostream>
 
@@ -17,6 +16,17 @@ BOOST_CLASS_EXPORT_IMPLEMENT(BidirectionalTreeLSTMBuilder)
 
 enum { X2I, BI, X2F, BF, X2O, BO, X2C, BC };
 enum { H2I, H2F, H2O, H2C, C2I, C2F, C2O };
+
+Expression TreeLSTMBuilder::add_input_impl(int prev, const Expression& x) { throw std::runtime_error("add_input_impl() not a valid function for TreeLSTMBuilder"); }
+Expression TreeLSTMBuilder::back() const { throw std::runtime_error("back() not a valid function for TreeLSTMBuilder"); }
+std::vector<Expression> TreeLSTMBuilder::final_h() const { throw std::runtime_error("final_h() not a valid function for TreeLSTMBuilder"); }
+std::vector<Expression> TreeLSTMBuilder::final_s() const { throw std::runtime_error("final_s() not a valid function for TreeLSTMBuilder"); }
+unsigned TreeLSTMBuilder::num_h0_components() const { throw std::runtime_error("num_h0_components() not a valid function for TreeLSTMBuilder"); }
+void TreeLSTMBuilder::copy(const RNNBuilder&) { throw std::runtime_error("copy() not a valid function for TreeLSTMBuilder"); }
+
+DYNET_SERIALIZE_COMMIT(TreeLSTMBuilder, DYNET_SERIALIZE_DERIVED_EQ_DEFINE(RNNBuilder))
+DYNET_SERIALIZE_IMPL(TreeLSTMBuilder);
+
 // See "Improved Semantic Representations From Tree-Structured Long Short-Term Memory Networks"
 // by Tai, Nary, and Manning (2015), section 3.2, for details on this model.
 // http://arxiv.org/pdf/1503.00075v3.pdf
@@ -85,7 +95,7 @@ void NaryTreeLSTMBuilder::new_graph_impl(ComputationGraph& cg) {
     vector<Expression> vars = {i_x2i, i_bi, i_x2f, i_bf, i_x2o, i_bo, i_x2c, i_bc};
     param_vars.push_back(vars);
 
-    assert (lp.size() == C2O + 1);
+    DYNET_ASSERT(lp.size() == C2O + 1, "Dimension mismatch in TreeLSTM");
     vector<vector<Expression>> lvars(lp.size());
     for (unsigned p_type = H2I; p_type <= C2O; p_type++) {
     LookupParameter p = lp[p_type];
@@ -114,7 +124,9 @@ void NaryTreeLSTMBuilder::start_new_sequence_impl(const vector<Expression>& hini
   h.clear();
   c.clear();
   if (hinit.size() > 0) {
-    assert(layers*2 == hinit.size());
+    DYNET_ARG_CHECK(layers*2 == hinit.size(),
+                            "Incorrectly sized initialization in TreeLSTM (" << hinit.size() << "). "
+                            "Must be twice the number of layers (which is " << layers<< ")");
     h0.resize(layers);
     c0.resize(layers);
     for (unsigned i = 0; i < layers; ++i) {
@@ -128,8 +140,8 @@ void NaryTreeLSTMBuilder::start_new_sequence_impl(const vector<Expression>& hini
 }
 
 Expression NaryTreeLSTMBuilder::add_input(int id, vector<int> children, const Expression& x) {
-  assert (id >= 0 && h.size() == (unsigned)id);
-  assert (id >= 0 && c.size() == (unsigned)id);
+  DYNET_ASSERT(id >= 0 && h.size() == (unsigned)id, "Failed dimension check in TreeLSTMBuilder");
+  DYNET_ASSERT(id >= 0 && c.size() == (unsigned)id, "Failed dimension check in TreeLSTMBuilder");
   h.push_back(vector<Expression>(layers));
   c.push_back(vector<Expression>(layers));
   vector<Expression>& ht = h.back();
@@ -172,7 +184,7 @@ Expression NaryTreeLSTMBuilder::add_input(int id, vector<int> children, const Ex
         xs.push_back(Lookup(i, C2I, ej));
         xs.push_back(i_c_children[j]);
       }
-      assert (xs.size() == 4 * children.size() + 3);
+      DYNET_ASSERT(xs.size() == 4 * children.size() + 3, "Failed dimension check in TreeLSTMBuilder");
       i_ait = affine_transform(xs);
     }
     else
@@ -194,7 +206,7 @@ Expression NaryTreeLSTMBuilder::add_input(int id, vector<int> children, const Ex
           xs.push_back(Lookup(i, C2F, ej * N + ek));
           xs.push_back(i_c_children[j]);
         }
-        assert (xs.size() == 4 * children.size() + 3);
+        DYNET_ASSERT(xs.size() == 4 * children.size() + 3, "Failed dimension check in TreeLSTMBuilder");
         i_aft = affine_transform(xs);
       }
       else
@@ -214,7 +226,7 @@ Expression NaryTreeLSTMBuilder::add_input(int id, vector<int> children, const Ex
         xs.push_back(Lookup(i, H2C, ej));
         xs.push_back(i_h_children[j]);
       }
-      assert (xs.size() == 2 * children.size() + 3);
+      DYNET_ASSERT(xs.size() == 2 * children.size() + 3, "Failed dimension check in TreeLSTMBuilder");
       i_awt = affine_transform(xs);
     }
     else
@@ -247,7 +259,7 @@ Expression NaryTreeLSTMBuilder::add_input(int id, vector<int> children, const Ex
         xs.push_back(Lookup(i, C2O, ej));
         xs.push_back(i_c_children[j]);
       }
-      assert (xs.size() == 4 * children.size() + 3);
+      DYNET_ASSERT(xs.size() == 4 * children.size() + 3, "Failed dimension check in TreeLSTMBuilder");
       i_aot = affine_transform(xs);
     }
     else
@@ -263,7 +275,7 @@ Expression NaryTreeLSTMBuilder::add_input(int id, vector<int> children, const Ex
 
 void NaryTreeLSTMBuilder::copy(const RNNBuilder & rnn) {
   const NaryTreeLSTMBuilder & rnn_treelstm = (const NaryTreeLSTMBuilder&)rnn;
-  assert(params.size() == rnn_treelstm.params.size());
+  DYNET_ASSERT(params.size() == rnn_treelstm.params.size(), "Failed dimension check in TreeLSTMBuilder");
   for(size_t i = 0; i < params.size(); ++i) {
     for(size_t j = 0; j < params[i].size(); ++j) {
       params[i][j] = rnn_treelstm.params[i][j];
@@ -271,12 +283,8 @@ void NaryTreeLSTMBuilder::copy(const RNNBuilder & rnn) {
   }
 }
 
-Expression TreeLSTMBuilder::add_input_impl(int prev, const Expression& x) { throw std::runtime_error("add_input_impl() not a valid function for TreeLSTMBuilder"); }
-Expression TreeLSTMBuilder::back() const { throw std::runtime_error("back() not a valid function for TreeLSTMBuilder"); }
-std::vector<Expression> TreeLSTMBuilder::final_h() const { throw std::runtime_error("final_h() not a valid function for TreeLSTMBuilder"); }
-std::vector<Expression> TreeLSTMBuilder::final_s() const { throw std::runtime_error("final_s() not a valid function for TreeLSTMBuilder"); }
-unsigned TreeLSTMBuilder::num_h0_components() const { throw std::runtime_error("num_h0_components() not a valid function for TreeLSTMBuilder"); }
-void TreeLSTMBuilder::copy(const RNNBuilder&) { throw std::runtime_error("copy() not a valid function for TreeLSTMBuilder"); }
+DYNET_SERIALIZE_COMMIT(NaryTreeLSTMBuilder, DYNET_SERIALIZE_DERIVED_DEFINE(TreeLSTMBuilder, params, lparams, layers, N))
+DYNET_SERIALIZE_IMPL(NaryTreeLSTMBuilder);
 
 UnidirectionalTreeLSTMBuilder::UnidirectionalTreeLSTMBuilder(unsigned layers,
                          unsigned input_dim,
@@ -297,7 +305,7 @@ void UnidirectionalTreeLSTMBuilder::start_new_sequence_impl(const vector<Express
 }
 
 Expression UnidirectionalTreeLSTMBuilder::add_input(int id, vector<int> children, const Expression& x) {
-  assert (id >= 0 && h.size() == (unsigned)id);
+  DYNET_ASSERT(id >= 0 && h.size() == (unsigned)id, "Failed dimension check in TreeLSTMBuilder");
 
   RNNPointer prev = (RNNPointer)(-1);
   Expression embedding = node_builder.add_input(prev, x);
@@ -311,11 +319,14 @@ Expression UnidirectionalTreeLSTMBuilder::add_input(int id, vector<int> children
   return embedding;
 }
 
+DYNET_SERIALIZE_COMMIT(UnidirectionalTreeLSTMBuilder, DYNET_SERIALIZE_DERIVED_DEFINE(TreeLSTMBuilder, node_builder))
+DYNET_SERIALIZE_IMPL(UnidirectionalTreeLSTMBuilder);
+
 BidirectionalTreeLSTMBuilder::BidirectionalTreeLSTMBuilder(unsigned layers,
                          unsigned input_dim,
                          unsigned hidden_dim,
                          Model& model) {
-  assert (hidden_dim % 2 == 0);
+  DYNET_ASSERT(hidden_dim % 2 == 0, "Failed dimension check in TreeLSTMBuilder");
   fwd_node_builder = LSTMBuilder(layers, input_dim, hidden_dim / 2, model);
   rev_node_builder = LSTMBuilder(layers, input_dim, hidden_dim / 2, model);
 }
@@ -334,7 +345,7 @@ void BidirectionalTreeLSTMBuilder::start_new_sequence_impl(const vector<Expressi
 }
 
 Expression BidirectionalTreeLSTMBuilder::add_input(int id, vector<int> children, const Expression& x) {
-  assert (id >= 0 && h.size() == (unsigned)id);
+  DYNET_ASSERT(id >= 0 && h.size() == (unsigned)id, "Failed dimension check in TreeLSTMBuilder");
 
   RNNPointer prev = (RNNPointer)(-1);
   Expression fwd_embedding = fwd_node_builder.add_input(prev, x);
@@ -360,3 +371,6 @@ Expression BidirectionalTreeLSTMBuilder::add_input(int id, vector<int> children,
 }
 
 Expression BidirectionalTreeLSTMBuilder::set_h_impl(int prev, const vector<Expression>& h_new) { throw std::runtime_error("set_h() not a valid function for BidirectionalTreeLSTMBuilder"); }
+
+DYNET_SERIALIZE_COMMIT(BidirectionalTreeLSTMBuilder, DYNET_SERIALIZE_DERIVED_DEFINE(TreeLSTMBuilder, fwd_node_builder, rev_node_builder))
+DYNET_SERIALIZE_IMPL(BidirectionalTreeLSTMBuilder);

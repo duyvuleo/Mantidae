@@ -2,7 +2,6 @@
 #include "dynet/tensor.h"
 #include "dynet/aligned-mem-pool.h"
 #include "dynet/dynet.h"
-#include "dynet/io-macros.h"
 
 #include <unordered_set>
 #include <iostream>
@@ -13,16 +12,9 @@
 
 #include <stdexcept>
 
+#define LOAD_INIT_FUNC() initialize_lookups()
 
-#ifndef __CUDACC__
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
-#include <boost/serialization/export.hpp>
-#include <boost/serialization/vector.hpp>
-#include <boost/serialization/serialization.hpp>
-#include <boost/serialization/access.hpp>
-#include <boost/serialization/split_member.hpp>
-#else
+#ifdef __CUDACC__
 #include "dynet/gpu-ops.h"
 #endif
 
@@ -38,14 +30,14 @@
   void MyParam::regular_func(float *sqnorm) const { \
     if(default_device->type == DeviceType::CPU) { dev_func(*(Device_CPU*)default_device,sqnorm); } \
     else if(default_device->type == DeviceType::GPU) { dev_func(*(Device_GPU*)default_device,sqnorm); } \
-    else { abort(); } \
+    else { throw std::runtime_error("Invalid device type in MyParam::dev_func"); } \
   }
 #else
 #define DYNET_PARAMNORM_INST_DEV_IMPL(MyParam, regular_func, dev_func) \
   template void MyParam::dev_func<Device_CPU>(Device_CPU & dev, float *sqnorm) const; \
   void MyParam::regular_func(float *sqnorm) const { \
     if(default_device->type == DeviceType::CPU) { dev_func(*(Device_CPU*)default_device,sqnorm); } \
-    else { abort(); } \
+    else { throw std::runtime_error("Invalid device type in MyParam::dev_func"); } \
   }
 #endif
 
@@ -91,7 +83,8 @@ void ParameterStorage::zero() {
 }
 
 void ParameterStorage::copy(const ParameterStorage & param) {
-  assert(dim == param.dim);
+  DYNET_ARG_CHECK(dim == param.dim,
+                          "Attempt to copy between parameters with mismatched dimensions: " << dim << " != " << param.dim);
   TensorTools::CopyElements(values, param.values);
 }
 
@@ -101,17 +94,12 @@ void ParameterStorage::clear() {
 }
 
 #ifndef __CUDACC__
-template<class Archive>
-void ParameterStorage::serialize(Archive& ar, const unsigned int) {
-  ar & boost::serialization::base_object<ParameterStorageBase>(*this);
-  ar & dim;
-  ar & values;
-  ar & g;
-}
+DYNET_SERIALIZE_COMMIT(ParameterStorage,
+                       DYNET_SERIALIZE_DERIVED_DEFINE(ParameterStorageBase, dim, values, g))
 DYNET_SERIALIZE_IMPL(ParameterStorage)
 #endif
 
-LookupParameterStorage::LookupParameterStorage(unsigned n, const Dim& d) : dim(d) {
+LookupParameterStorage::LookupParameterStorage(unsigned n, const Dim& d) : dim(d), all_updated(false) {
   all_dim = dim; all_dim.d[all_dim.nd++] = n;
   all_grads.d = all_values.d = all_dim;
   all_grads.device = all_values.device = default_device;
@@ -122,7 +110,7 @@ LookupParameterStorage::LookupParameterStorage(unsigned n, const Dim& d) : dim(d
   initialize_lookups();
 }
 
-LookupParameterStorage::LookupParameterStorage(unsigned n, const Dim& d, const ParameterInit & init) : dim(d) {
+LookupParameterStorage::LookupParameterStorage(unsigned n, const Dim& d, const ParameterInit & init) : dim(d), all_updated(false) {
   all_dim = dim; all_dim.d[all_dim.nd++] = n;
   all_grads.d = all_values.d = all_dim;
   all_grads.device = all_values.device = default_device;
@@ -157,37 +145,28 @@ size_t LookupParameterStorage::size() const {
 }
 
 void LookupParameterStorage::copy(const LookupParameterStorage& param) {
-  assert(all_dim == param.all_dim);
+  if(all_dim != param.all_dim)
+    DYNET_INVALID_ARG("Attempt to copy between lookup parameters with mismatched dimensions: " << all_dim << " != " << param.all_dim);
   TensorTools::CopyElements(all_values, param.all_values);
 }
 
 void LookupParameterStorage::clear() {
-  // TODO: this is hacky, probably need a better heuristic
-  if (all_grads.device->type == DeviceType::GPU) {
+  // TODO: the GPU part is hacky, probably need a better heuristic
+  if (all_grads.device->type == DeviceType::GPU || all_updated) {
     TensorTools::Zero(all_grads);
   } else {
     for (auto i : non_zero_grads)
       TensorTools::Zero(grads[i]);
   }
   non_zero_grads.clear();
+  all_updated = false;
 }
 
 #ifndef __CUDACC__
-template<class Archive>
-void LookupParameterStorage::save(Archive& ar, const unsigned int) const {
-  ar << boost::serialization::base_object<ParameterStorageBase>(*this);
-  ar << all_dim;
-  ar << all_values;
-  ar << all_grads;
-}
-template<class Archive>
-void LookupParameterStorage::load(Archive& ar, const unsigned int) {
-  ar >> boost::serialization::base_object<ParameterStorageBase>(*this);
-  ar >> all_dim;
-  ar >> all_values;
-  ar >> all_grads;
-  initialize_lookups();
-}
+DYNET_SERIALIZE_SAVE_COMMIT(LookupParameterStorage,
+		            DYNET_SERIALIZE_DERIVED_DEFINE(ParameterStorageBase, all_dim, all_values, all_grads))
+DYNET_SERIALIZE_LOAD_COMMIT(LookupParameterStorage, LOAD_INIT_FUNC(),
+		            DYNET_SERIALIZE_DERIVED_DEFINE(ParameterStorageBase, all_dim, all_values, all_grads))
 DYNET_SAVELOAD_IMPL(LookupParameterStorage)
 #endif
 
@@ -215,7 +194,10 @@ void ParameterInitGlorot::initialize_params(Tensor & values) const {
 }
 
 void ParameterInitSaxe::initialize_params(Tensor & values) const {
-  TensorTools::RandomizeOrthogonal(values, gain);
+  if (values.device->type == DeviceType::GPU)
+    throw std::runtime_error("Saxe initialization not implemented for CUDA (we welcome pull requests)");
+  else
+    TensorTools::RandomizeOrthonormal(values, gain);
 }
 
 
@@ -256,11 +238,7 @@ bool Parameter::is_updated() {
 
 
 #ifndef __CUDACC__
-template<class Archive>
-void Parameter::serialize(Archive& ar, const unsigned int) {
-  ar & mp;
-  ar & index;
-}
+DYNET_SERIALIZE_COMMIT(Parameter, DYNET_SERIALIZE_DEFINE(mp, index))
 DYNET_SERIALIZE_IMPL(Parameter)
 #endif
 
@@ -291,11 +269,7 @@ bool LookupParameter::is_updated() {
 }
 
 #ifndef __CUDACC__
-template<class Archive>
-void LookupParameter::serialize(Archive& ar, const unsigned int) {
-  ar & mp;
-  ar & index;
-}
+DYNET_SERIALIZE_COMMIT(LookupParameter, DYNET_SERIALIZE_DEFINE(mp, index))
 DYNET_SERIALIZE_IMPL(LookupParameter)
 #endif
 
@@ -371,7 +345,7 @@ LookupParameter Model::add_lookup_parameters(unsigned n, const Dim& d, const Par
 
 void Model::set_updated_param(const Parameter *p, bool status) {
   unsigned idx = p->index;
-  assert(idx < params.size());
+  DYNET_ASSERT(idx < params.size(), "Parameter ID " << idx << " is less than parameter size " << params.size());
 
   auto position = std::find(updated_params.begin(), updated_params.end(), idx);
   if (position == updated_params.end()) {
@@ -383,7 +357,7 @@ void Model::set_updated_param(const Parameter *p, bool status) {
 
 void Model::set_updated_lookup_param(const LookupParameter *p, bool status) {
   unsigned idx = p->index;
-  assert(idx < lookup_params.size());
+  DYNET_ASSERT(idx < lookup_params.size(), "LookupParameter ID " << idx << " is less than lookup parameter size " << lookup_params.size());
 
   auto position = std::find(updated_lookup_params.begin(), updated_lookup_params.end(), idx);
   if (position == updated_lookup_params.end()) {
@@ -428,16 +402,10 @@ size_t Model::updated_parameter_count() const {
 }
 
 #ifndef __CUDACC__
-template<class Archive>
-void Model::serialize(Archive& ar, const unsigned int) {
-  ar & all_params;
-  ar & params;
-  ar & lookup_params;
-  ar & weight_decay;
-  // TODO do we want to save these or not?
-  ar & updated_params;
-  ar & updated_lookup_params;
-}
+DYNET_SERIALIZE_COMMIT(Model,
+                       DYNET_SERIALIZE_DEFINE(all_params, params,
+                                              lookup_params, weight_decay,
+                                              updated_params, updated_lookup_params))
 DYNET_SERIALIZE_IMPL(Model)
 #endif
 
@@ -474,7 +442,7 @@ DYNET_PARAMNORM_INST_DEV_IMPL(ParameterStorage, squared_l2norm, squared_l2norm_d
 // Take the squared norm of the gradient
 template <class MyDevice>
 void ParameterStorage::g_squared_l2norm_dev(MyDevice & dev, float* sqnorm) const {
-  assert(g.v != nullptr);
+  DYNET_ASSERT(g.v != nullptr, "Cannot take norm of gradient with null parameter");
   Tensor sqnorm_t({1}, sqnorm, &dev, DeviceMempool::NONE);
   sqnorm_t.t<0>().device(*dev.edevice) = g.tvec().square().sum();
 }
@@ -492,13 +460,13 @@ template void ParameterStorage::accumulate_grad_dev<Device_CPU>(Device_CPU & dev
 void ParameterStorage::accumulate_grad(const Tensor& d) {
   if (values.device->type == DeviceType::CPU) { accumulate_grad_dev(*(Device_CPU*)values.device, d); }
   else if (values.device->type == DeviceType::GPU) { accumulate_grad_dev(*(Device_GPU*)values.device, d); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #else
 template void ParameterStorage::accumulate_grad_dev<Device_CPU>(Device_CPU & dev, const Tensor& d);
 void ParameterStorage::accumulate_grad(const Tensor& d) {
   if (values.device->type == DeviceType::CPU) { accumulate_grad_dev(*(Device_CPU*)values.device, d); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #endif
 
@@ -514,19 +482,21 @@ template void ParameterStorage::scale_parameters_dev<Device_CPU>(Device_CPU & de
 void ParameterStorage::scale_parameters(float a) {
   if (values.device->type == DeviceType::CPU) { scale_parameters_dev(*(Device_CPU*)values.device, a); }
   else if (values.device->type == DeviceType::GPU) { scale_parameters_dev(*(Device_GPU*)values.device, a); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #else
 template void ParameterStorage::scale_parameters_dev<Device_CPU>(Device_CPU & dev, float a);
 void ParameterStorage::scale_parameters(float a) {
   if (values.device->type == DeviceType::CPU) { scale_parameters_dev(*(Device_CPU*)values.device, a); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #endif
 
 template <class MyDevice>
 void LookupParameterStorage::initialize_dev(MyDevice & dev, unsigned index, const vector<float>& val) {
-  assert(int(val.size()) == int(dim.size()));
+  DYNET_ARG_CHECK(int(val.size()) == int(dim.size()),
+                          "Attempt to initialize LookupParameters with vector of wrong size "
+                          "(" << val.size() << " != " << dim.size() << ")");
 #ifdef __CUDACC__
   cudaMemcpyAsync(values[index].v, &val[0], val.size() * sizeof(float), cudaMemcpyHostToDevice);
 #else
@@ -541,13 +511,13 @@ template void LookupParameterStorage::initialize_dev<Device_CPU>(Device_CPU & de
 void LookupParameterStorage::initialize(unsigned index, const vector<float>& val) {
   if (values[index].device->type == DeviceType::CPU) { initialize_dev(*(Device_CPU*)values[index].device, index, val); }
   else if (values[index].device->type == DeviceType::GPU) { initialize_dev(*(Device_GPU*)values[index].device, index, val); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #else
 template void LookupParameterStorage::initialize_dev<Device_CPU>(Device_CPU & dev, unsigned index, const vector<float>& val);
 void LookupParameterStorage::initialize(unsigned index, const vector<float>& val) {
   if (values[index].device->type == DeviceType::CPU) { initialize_dev(*(Device_CPU*)values[index].device, index, val); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #endif
 
@@ -561,12 +531,40 @@ DYNET_PARAMNORM_INST_DEV_IMPL(LookupParameterStorage, squared_l2norm, squared_l2
 template <class MyDevice>
 void LookupParameterStorage::g_squared_l2norm_dev(MyDevice & dev, float* sqnorm) const {
   Tensor sqnorm_t({1}, sqnorm, &dev, DeviceMempool::NONE);
-  auto it = non_zero_grads.begin();
   TensorTools::Zero(sqnorm_t);
-  while (it != non_zero_grads.end())
-    sqnorm_t.t<0>().device(*dev.edevice) += grads[*(it++)].tvec().square().sum();
+  // TODO: the GPU part is hacky, probably need a better heuristic
+  if (all_grads.device->type == DeviceType::GPU || all_updated) {
+    sqnorm_t.t<0>().device(*dev.edevice) += all_grads.tvec().square().sum();
+  } else {
+    auto it = non_zero_grads.begin();
+    while (it != non_zero_grads.end())
+      sqnorm_t.t<0>().device(*dev.edevice) += grads[*(it++)].tvec().square().sum();
+  }
 }
 DYNET_PARAMNORM_INST_DEV_IMPL(LookupParameterStorage, g_squared_l2norm, g_squared_l2norm_dev)
+
+template <class MyDevice>
+void LookupParameterStorage::accumulate_grad_dev(MyDevice & dev, const Tensor& d) {
+  all_updated = true;
+  all_grads.tvec().device(*dev.edevice) += d.tvec();
+}
+#ifdef __CUDACC__
+template void LookupParameterStorage::accumulate_grad_dev<Device_GPU>(Device_GPU & dev, const Tensor& d);
+#elif defined(HAVE_CUDA)
+extern template void LookupParameterStorage::accumulate_grad_dev<Device_GPU>(Device_GPU & dev, const Tensor& d);
+template void LookupParameterStorage::accumulate_grad_dev<Device_CPU>(Device_CPU & dev, const Tensor& d);
+void LookupParameterStorage::accumulate_grad(const Tensor& d) {
+  if (all_values.device->type == DeviceType::CPU) { accumulate_grad_dev(*(Device_CPU*)all_values.device, d); }
+  else if (all_values.device->type == DeviceType::GPU) { accumulate_grad_dev(*(Device_GPU*)all_values.device, d); }
+  else { throw std::runtime_error("Bad device type"); }
+}
+#else
+template void LookupParameterStorage::accumulate_grad_dev<Device_CPU>(Device_CPU & dev, const Tensor& d);
+void LookupParameterStorage::accumulate_grad(const Tensor& d) {
+  if (all_values.device->type == DeviceType::CPU) { accumulate_grad_dev(*(Device_CPU*)all_values.device, d); }
+  else { throw std::runtime_error("Bad device type"); }
+}
+#endif
 
 template <class MyDevice>
 void LookupParameterStorage::accumulate_grad_dev(MyDevice & dev, unsigned index, const Tensor& d) {
@@ -581,13 +579,13 @@ template void LookupParameterStorage::accumulate_grad_dev<Device_CPU>(Device_CPU
 void LookupParameterStorage::accumulate_grad(unsigned index, const Tensor& d) {
   if (values[index].device->type == DeviceType::CPU) { accumulate_grad_dev(*(Device_CPU*)values[index].device, index, d); }
   else if (values[index].device->type == DeviceType::GPU) { accumulate_grad_dev(*(Device_GPU*)values[index].device, index, d); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #else
 template void LookupParameterStorage::accumulate_grad_dev<Device_CPU>(Device_CPU & dev, unsigned index, const Tensor& d);
 void LookupParameterStorage::accumulate_grad(unsigned index, const Tensor& d) {
   if (values[index].device->type == DeviceType::CPU) { accumulate_grad_dev(*(Device_CPU*)values[index].device, index, d); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #endif
 
@@ -615,13 +613,13 @@ template void LookupParameterStorage::accumulate_grads_dev<Device_CPU>(Device_CP
 void LookupParameterStorage::accumulate_grads(unsigned n, const unsigned* ids_host, const unsigned* ids_dev, float* g) {
   if (all_values.device->type == DeviceType::CPU) { accumulate_grads_dev(*(Device_CPU*)all_values.device, n, ids_host, ids_dev, g); }
   else if (all_values.device->type == DeviceType::GPU) { accumulate_grads_dev(*(Device_GPU*)all_values.device, n, ids_host, ids_dev, g); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #else
 template void LookupParameterStorage::accumulate_grads_dev<Device_CPU>(Device_CPU & dev, unsigned n, const unsigned* ids_host, const unsigned* ids_dev, float* g);
 void LookupParameterStorage::accumulate_grads(unsigned n, const unsigned* ids_host, const unsigned* ids_dev, float* g) {
   if (all_values.device->type == DeviceType::CPU) { accumulate_grads_dev(*(Device_CPU*)all_values.device, n, ids_host, ids_dev, g); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #endif
 
@@ -637,13 +635,13 @@ template void LookupParameterStorage::scale_parameters_dev<Device_CPU>(Device_CP
 void LookupParameterStorage::scale_parameters(float a) {
   if (values[0].device->type == DeviceType::CPU) { scale_parameters_dev(*(Device_CPU*)values[0].device, a); }
   else if (values[0].device->type == DeviceType::GPU) { scale_parameters_dev(*(Device_GPU*)values[0].device, a); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #else
 template void LookupParameterStorage::scale_parameters_dev<Device_CPU>(Device_CPU & dev, float a);
 void LookupParameterStorage::scale_parameters(float a) {
   if (values[0].device->type == DeviceType::CPU) { scale_parameters_dev(*(Device_CPU*)values[0].device, a); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #endif
 
@@ -673,13 +671,13 @@ template float Model::gradient_l2_norm_dev<Device_CPU>(Device_CPU & dev) const;
 float Model::gradient_l2_norm() const {
   if (default_device->type == DeviceType::CPU) { return gradient_l2_norm_dev(*(Device_CPU*)default_device); }
   else if (default_device->type == DeviceType::GPU) { return gradient_l2_norm_dev(*(Device_GPU*)default_device); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #else
 template float Model::gradient_l2_norm_dev<Device_CPU>(Device_CPU & dev) const;
 float Model::gradient_l2_norm() const {
   if (default_device->type == DeviceType::CPU) { return gradient_l2_norm_dev(*(Device_CPU*)default_device); }
-  else { abort(); }
+  else { throw std::runtime_error("Bad device type"); }
 }
 #endif
 

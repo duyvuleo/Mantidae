@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dynet/globals.h"
 #include "dynet/nodes.h"
 #include "dynet/dynet.h"
 #include "dynet/training.h"
@@ -1032,7 +1033,7 @@ template <class Builder>
 void AttentionalModel<Builder>::BuildGraph(const std::vector<int> &source,
 	const std::vector<int>& target, ComputationGraph& cg
 	, std::vector<std::vector<float>>& v_preds, bool with_softmax) 
-{
+{// v_preds does not contain predictions for <s> and </s>.
 	//std::cout << "source sentence length: " << source.size() << " target: " << target.size() << std::endl;
 	StartNewInstance(source, cg, 0);
 
@@ -1042,11 +1043,11 @@ void AttentionalModel<Builder>::BuildGraph(const std::vector<int> &source,
 		Expression i_r_t = AddInput(target[t], t, cg);
 		if (with_softmax){// w/ softmax prediction
 			Expression i_softmax = softmax(i_r_t);
-			if (t != tlen - 1)// excluding EOS prediction
+			//if (t != tlen - 1)// excluding EOS prediction
 				v_preds.push_back(as_vector(cg.get_value(i_softmax.i)));
 		}
 		else{// w/o softmax prediction
-			if (t != tlen - 1)// excluding EOS prediction
+			//if (t != tlen - 1)// excluding EOS prediction
 				v_preds.push_back(as_vector(cg.get_value(i_r_t.i)));
 		}
 	}

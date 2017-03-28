@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
 		("swap", "swap roles of source and target, i.e., learn p(source|target)")
 		//-----------------------------------------		
 		("relopt_algo", value<unsigned>()->default_value(RELOPT_ALGO::EG), "The algorithm (1:EG; 2:AdaptiveEG 3:SOFTMAX; 5:SPARSEMAX) for relaxed optimization")
-		("relopt_init", value<unsigned>()->default_value(RELOPT_INIT::RANDOM), "The initialization method (0:RANDOM; 1:REFERENCE_PROBABILITY; 2:REFERENCE_ONE_HOT) for relaxed optimization")
+		("relopt_init", value<unsigned>()->default_value(RELOPT_INIT::UNIFORM), "The initialization method (0:UNIFORM; 1:REFERENCE_PROBABILITY; 2:REFERENCE_ONE_HOT) for relaxed optimization")
 		("relopt_eta", value<float>()->default_value(1.f), "The learning rate for relaxed optimization")
 		("relopt_eta_decay", value<float>()->default_value(2.f), "The learning rate decay for relaxed optimization")
 		("relopt_eta_power", value<float>()->default_value(0.f), "The learning rate power for relaxed optimization")
