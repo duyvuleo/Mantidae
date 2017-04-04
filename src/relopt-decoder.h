@@ -120,7 +120,7 @@ struct RelOptConfig{
 		// coverage constraint
 		coverage_weight = 0.f;
 		coverage_C = 1.0f;
-		
+
 		// global fertility constraint weight
 		glofer_weight = 0.f;
 
@@ -151,9 +151,14 @@ public:
 		, RNNLM_t *rnnlm
 		, dynet::Dict* vocab_src
 		, dynet::Dict* vocab_trg);
+
 	RelOptOutput GDDecode(const string& src_sent
 			, const std::string& trg_ref
 			, const RelOptConfig& relopt_cf);
+	RelOptOutput GDDecode_MinMax(const string& src_sent
+			, const std::string& trg_ref
+			, const RelOptConfig& relopt_cf);
+
 	float GetNLLCost(const string& src_sent, const std::string& trg_sent);
 	float GetNLLCost(const string& src_sent, const std::string& trg_sent
 		, dynet::ComputationGraph& cg);
@@ -223,7 +228,7 @@ void RelOptDecoder<AM_t,BAM_t,RNNLM_t>::LoadModel(AM_t *am
 // computation cost (or NLL) given a source and target sentence pair
 template <class AM_t, class BAM_t, class RNNLM_t>
 float RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GetNLLCost(const string& src_sent, const std::string& trg_sent)
-{	
+{
 	Sentence i_src_sent = ParseWords(*vocab_src_, src_sent);
 	Sentence i_trg_sent;
 	if (trg_sent.find("<s>", 0, 3) == std::string::npos) // FIXME: not a good way?
@@ -234,24 +239,24 @@ float RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GetNLLCost(const string& src_sent, cons
 	dynet::ComputationGraph cg;
 	ModelStats stats;
 	auto iloss = (1.f / (float)(i_trg_sent.size() - 1)) * am_->BuildGraph(i_src_sent, i_trg_sent, cg, stats);// normalized NLL
-	
+
 	return as_scalar(cg.forward(iloss));
 }
 
 template <class AM_t, class BAM_t, class RNNLM_t>
 float RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GetNLLCost(const string& src_sent, const std::string& trg_sent
 		, dynet::ComputationGraph& cg)
-{	
+{
 	Sentence i_src_sent = ParseWords(*vocab_src_, src_sent);
 	Sentence i_trg_sent;
 	if (trg_sent.find("<s>", 0, 3) == std::string::npos) // FIXME: not a good way?
 		 i_trg_sent = ParseWords(*vocab_trg_, "<s> " + trg_sent + " </s>");
 	else
 		 i_trg_sent = ParseWords(*vocab_trg_, trg_sent);
-	
+
 	ModelStats stats;
 	auto iloss = (1.f / (float)(i_trg_sent.size() - 1)) * am_->BuildGraph(i_src_sent, i_trg_sent, cg, stats);// normalized NLL
-	
+
 	return as_scalar(cg.forward(iloss));
 }
 
@@ -284,14 +289,14 @@ void RelOptDecoder<AM_t,BAM_t,RNNLM_t>::InitializeParameters(const std::string& 
 
 		// reset the computation graph
 		dynet::ComputationGraph cg;
-		
+
 		std::vector<std::vector<float>> v_preds;
-		if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX 
+		if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX
 			|| relopt_cf.algorithm == RELOPT_ALGO::SPARSEMAX)
 			am_->BuildGraph(i_src_sent, i_trg_sent, cg, v_preds, false);// v_preds are unnormalized predictions from the model
-		else if (relopt_cf.algorithm == RELOPT_ALGO::EG || relopt_cf.algorithm == RELOPT_ALGO::AEG) 
+		else if (relopt_cf.algorithm == RELOPT_ALGO::EG || relopt_cf.algorithm == RELOPT_ALGO::AEG)
 			am_->BuildGraph(i_src_sent, i_trg_sent, cg, v_preds);// v_preds are softmax-normalized predictions from the model
-		
+
 		unsigned ind = 0;
 		for (auto& pred : v_preds){
 			if (ind != v_preds.size() - 1){// </s> prediction
@@ -304,8 +309,8 @@ void RelOptDecoder<AM_t,BAM_t,RNNLM_t>::InitializeParameters(const std::string& 
 
 		// add additional words, potentially helping the model expand the reference translations
 		if (relopt_cf.add_extra_words > 0){
-			dynet::ParameterInitFromVector param_init_const(v_preds[ind - 1]);// initialization from </s> prediction
-			//dynet::ParameterInitConst param_init_const(1.f / (float)trg_vocab_size);// uniform initialization
+			//dynet::ParameterInitFromVector param_init_const(v_preds[ind - 1]);// initialization from </s> prediction
+			dynet::ParameterInitConst param_init_const(1.f / (float)trg_vocab_size);// uniform initialization
 			for (unsigned i = 0; i < relopt_cf.add_extra_words; i++){
 				v_params.push_back(model.add_parameters({(unsigned int)trg_vocab_size}, param_init_const));
 			}
@@ -355,7 +360,7 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 	// create SGD trainer
 	//std::cerr << "GDDecode:2" << std::endl;
 	dynet::Trainer* trainer = nullptr;
-	if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX 
+	if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX
 		|| relopt_cf.algorithm == RELOPT_ALGO::SPARSEMAX){//SOFTMAX or SPARSEMAX
 		if (relopt_cf.momentum != 0.f)
 			trainer = new dynet::MomentumSGDTrainer(relopt_model, relopt_cf.eta, relopt_cf.momentum);// Momemtum SGD
@@ -373,7 +378,7 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 	else if (relopt_cf.algorithm == RELOPT_ALGO::AEG){//Adaptive EG (AEG) with either AdaGrad or Adam
 		trainer = new dynet::AdaptiveEGTrainer(relopt_model, relopt_cf.eta);// use our own implementation of EGTrainer
 	}
-	else 
+	else
 		assert("Unknown relaxed optimization algorithm!");
 	trainer->eta_decay = relopt_cf.eta_decay;// learning rate decay
 
@@ -386,7 +391,7 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 	Sentence i_src_sent = ParseWords(*vocab_src_, src_sent);
 
 	//std::cerr << "GDDecode:3" << std::endl;
-	
+
 	// perform the relaxed inference algo
 	//std::default_random_engine generator;
 	//std::uniform_int_distribution<int> distribution(0, L - 1);
@@ -397,7 +402,7 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 	{
 		// (1) reset the computation graph
 		dynet::ComputationGraph cg;
-		
+
 		// (2) pre-compute the source embedding representation
 		// FIXME: this step is repeated for every iteration?
 		//std::cerr << "GDDecode:3:(1)" << std::endl;
@@ -410,16 +415,16 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 			am_->ComputeTrgWordEmbeddingMatrix(cg);// source-to-target/left-to-right model
 			am_->StartNewInstance(i_src_sent, cg, 0);
 		}
-		if (relopt_cf.jdec_bidir_alpha > 0.f 
+		if (relopt_cf.jdec_bidir_alpha > 0.f
 			&& relopt_cf.jdec_bidir_alpha < 1.f){
 			am_r2l_->ComputeTrgWordEmbeddingMatrix(cg);// right-to-left model
 			am_r2l_->StartNewInstance(i_src_sent, cg, 0);
 		}
-		if (relopt_cf.jdec_mlm_alpha > 0.f 
+		if (relopt_cf.jdec_mlm_alpha > 0.f
 			&& relopt_cf.jdec_mlm_alpha < 1.f){
 			rnnlm_->ComputeWordEmbeddingMatrix(cg);// monolingual RNN language model
 		}
-		if (relopt_cf.jdec_biling_alpha > 0.f 
+		if (relopt_cf.jdec_biling_alpha > 0.f
 			&& relopt_cf.jdec_biling_alpha < 1.f){
 			am_t2s_->ComputeSrcWordEmbeddingMatrix(cg);// target-to-source model
 		}
@@ -454,7 +459,7 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 		//std::cerr << "GDDecode:3:(2b)" << std::endl;
 		// right-to-left AM model
 		dynet::expr::Expression i_cost_r2l;
-		if (relopt_cf.jdec_bidir_alpha > 0.f 
+		if (relopt_cf.jdec_bidir_alpha > 0.f
 			&& relopt_cf.jdec_bidir_alpha < 1.f){
 			i_cost_r2l = (1.f/(float)(L + 1)) * am_r2l_->BuildRelOptGraph(
 					relopt_cf.algorithm
@@ -478,7 +483,7 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 					, i_src_sent /*target*/
 					, cg
 					, *vocab_src_
-					, &i_alignment_t2s);// normalized sum of negative log likelihoods (NLL)			
+					, &i_alignment_t2s);// normalized sum of negative log likelihoods (NLL)
 		}
 		else{
 			if (relopt_cf.jdec_biling_alpha > 0.f && relopt_cf.jdec_biling_alpha < 1.f){
@@ -489,18 +494,18 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 					, cg
 					, *vocab_src_
 					, &i_alignment_t2s);// normalized sum of negative log likelihoods (NLL)
-			}			
+			}
 		}
 		//std::cerr << "GDDecode:3:(2d)" << std::endl;
 		dynet::expr::Expression i_cost_mlm;
-		if (relopt_cf.jdec_mlm_alpha > 0.f 
+		if (relopt_cf.jdec_mlm_alpha > 0.f
 			&& relopt_cf.jdec_mlm_alpha < 1.f){
 			i_cost_mlm = (1.f/(float)(L + 1)) * rnnlm_->BuildRelOptGraph( relopt_cf.algorithm
 					, v_relopt_params
 					, cg
 					, *vocab_trg_);// left-to-right or right-to-left direction will be implicitly recognized in model file.
 		}
-	
+
 		// (4) compute the additional costs if required
 		//std::cerr << "GDDecode:3:(3)" << std::endl;
 		dynet::expr::Expression i_objective = relopt_cf.m_weight * i_cost;// NLL
@@ -513,12 +518,12 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 			i_objective = i_objective + (1.f/(float)(L + 1)) * relopt_cf.glofer_weight * i_glofer_nll;// FIXME: normalization for glofer is required!
 		}
 		// joint decoding in bidirectional models
-		if (relopt_cf.jdec_bidir_alpha > 0.f 
+		if (relopt_cf.jdec_bidir_alpha > 0.f
 			&& relopt_cf.jdec_bidir_alpha < 1.f){
 			i_objective = i_objective + relopt_cf.jdec_bidir_alpha * i_cost_r2l;
 		}
 		// joint decoding in bilingual models
-		if ((relopt_cf.jdec_biling_alpha > 0.f 
+		if ((relopt_cf.jdec_biling_alpha > 0.f
 			&& relopt_cf.jdec_biling_alpha < 1.f) || bam_ != nullptr){
 			i_objective = i_objective + relopt_cf.jdec_biling_alpha * i_cost_t2s;
 			if (relopt_cf.jdec_biling_trace_alpha != 0.f){
@@ -528,15 +533,15 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 			}
 		}
 		// joint decoding with monolingual RNN language model
-		if (relopt_cf.jdec_mlm_alpha > 0.f 
+		if (relopt_cf.jdec_mlm_alpha > 0.f
 			&& relopt_cf.jdec_mlm_alpha < 1.f){
 			i_objective = i_objective + relopt_cf.jdec_mlm_alpha * i_cost_mlm;
 		}
 		// entropy regularizer for SOFTMAX or SPARSEMAX
-		if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX 
+		if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX
 			|| relopt_cf.algorithm == RELOPT_ALGO::SPARSEMAX)
 			i_objective = i_objective + relopt_cf.ent_gamma * i_entropy;
-		
+
 		// (5) do forward propagation step
 		//std::cerr << "GDDecode:3:(4a)" << std::endl;
 		cg.incremental_forward(i_objective);
@@ -554,15 +559,15 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 		}
 		float fobj = as_scalar(cg.get_value(i_objective.i));
 		float fcost_r2l = 0.f;
-		if (relopt_cf.jdec_bidir_alpha > 0.f 
+		if (relopt_cf.jdec_bidir_alpha > 0.f
 			&& relopt_cf.jdec_bidir_alpha < 1.f)
 			fcost_r2l = as_scalar(cg.get_value(i_cost_r2l.i));
 		float fcost_t2s = 0.f;
-		if (relopt_cf.jdec_biling_alpha > 0.f 
+		if (relopt_cf.jdec_biling_alpha > 0.f
 			&& relopt_cf.jdec_biling_alpha < 1.f)
 			fcost_t2s = as_scalar(cg.get_value(i_cost_t2s.i));
 		float fcost_mlm = 0.f;
-		if (relopt_cf.jdec_mlm_alpha > 0.f 
+		if (relopt_cf.jdec_mlm_alpha > 0.f
 			&& relopt_cf.jdec_mlm_alpha < 1.f)
 			fcost_mlm = as_scalar(cg.get_value(i_cost_mlm.i));
 
@@ -648,15 +653,15 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 
 		// verbose output
 		//std::cerr << "GDDecode:3:(7)" << std::endl;
-		if (verbose_) cerr << "All costs at step " 
-			<< t << ": " 
+		if (verbose_) cerr << "All costs at step "
+			<< t << ": "
 			<< "l2r_nll=" << fcost
 			<< "; r2l_nll=" << fcost_r2l
 			<< "; t2s_nll=" << fcost_t2s
 			<< "; mlm_nll=" << fcost_mlm
-			<< "; C_coverage=" << fcoverage 
-			<< "; glofer_fertility=" << fglofer 
-			<< "; total_objective=" << fobj << endl;			
+			<< "; C_coverage=" << fcoverage
+			<< "; glofer_fertility=" << fglofer
+			<< "; total_objective=" << fobj << endl;
 		string decoded_sent = am_->GetRelOptOutput(cg, v_relopt_params, relopt_cf.algorithm, *vocab_trg_, verbose_);
 		if (verbose_) cerr << "Result at step " << t << ": " << decoded_sent << " (discrete cost=" << GetNLLCost(src_sent, decoded_sent, cg) << ")" << endl;
 
@@ -683,6 +688,365 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 
 	//dynet::default_device->mem->free(gnorms);// free allocated memory for gnorms
 
+	delete trainer;
+
+	return RelOptOutput(best_sent, best_fcost, best_t);
+}
+
+// Sentence decoding with relaxed optimization algorithms
+template <class AM_t, class BAM_t, class RNNLM_t>
+RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode_MinMax(const string& src_sent
+		, const std::string& trg_ref
+		, const RelOptConfig& relopt_cf)
+{
+	dynet::Model relopt_model;// local relaxed inference model
+
+	//std::cerr << "GDDecode:1" << std::endl;
+	vector<dynet::Parameter> v_relopt_params;// inference parameters live here!
+	InitializeParameters(src_sent, trg_ref
+			, relopt_model
+			, v_relopt_params
+			, relopt_cf);
+	size_t L = v_relopt_params.size();// length of the desired target output (exclusing BOS and EOS)
+
+	// create SGD trainer
+	//std::cerr << "GDDecode:2" << std::endl;
+	dynet::Trainer* trainer = nullptr;
+	if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX
+		|| relopt_cf.algorithm == RELOPT_ALGO::SPARSEMAX){//SOFTMAX or SPARSEMAX
+		if (relopt_cf.momentum != 0.f)
+			trainer = new dynet::MomentumSGDTrainer(relopt_model, relopt_cf.eta, relopt_cf.momentum);// Momemtum SGD
+		else
+			trainer = new dynet::SimpleSGDTrainer(relopt_model, relopt_cf.eta);// Vanilla SGD
+		//FIXME: to support others as well!
+		//trainer = new dynet::AdamTrainer(relopt_model);// Adam SGD
+		//trainer = new dynet::AdadeltaTrainer(relopt_model);// AdaDelta SGD
+		//trainer = new dynet::AdagradTrainer(relopt_model);// Adagrad SGD
+		//trainer = new dynet::RmsPropTrainer(relopt_model);// RmsProp SGD
+	}
+	else if (relopt_cf.algorithm == RELOPT_ALGO::EG){//EG
+		trainer = new dynet::EGTrainer(relopt_model, relopt_cf.eta, relopt_cf.momentum);// use our own implementation of EGTrainer
+	}
+	else if (relopt_cf.algorithm == RELOPT_ALGO::AEG){//Adaptive EG (AEG) with either AdaGrad or Adam
+		trainer = new dynet::AdaptiveEGTrainer(relopt_model, relopt_cf.eta);// use our own implementation of EGTrainer
+	}
+	else
+		assert("Unknown relaxed optimization algorithm!");
+	trainer->eta_decay = relopt_cf.eta_decay;// learning rate decay
+
+	// hyper trainer
+	dynet::Model hyper_model;// local hyper model for optimizing hyperparameters with KKT constraints
+	dynet::ParameterInitConst param_init_const(1.f);//FIXME: how to choose initial value?
+	hyper_model.add_parameters({1}, param_init_const);
+	dynet::Trainer* hyper_trainer = new dynet::SimpleSGDTrainer(hyper_model, 0.1f/*FIXME: user-specific?*/);// Vanilla SGD, FIXME: momentum?
+
+	/*float* gnorms = 0;// gradient norm initialization
+	std::vector<int> indices(boost::counting_iterator<unsigned int>(0U)
+			, boost::counting_iterator<unsigned int>(L));
+	assert(indices.size() == L);*/
+
+	// convert the source sentence
+	Sentence i_src_sent = ParseWords(*vocab_src_, src_sent);
+
+	//std::cerr << "GDDecode:3" << std::endl;
+
+	// perform the relaxed inference algo
+	//std::default_random_engine generator;
+	//std::uniform_int_distribution<int> distribution(0, L - 1);
+	float best_fcost = std::numeric_limits<float>::max(), prev_fcost = best_fcost;
+	unsigned t = 0, T = relopt_cf.max_iters, best_t = 0;
+	std::string best_sent = "";
+	while (t < T)
+	{
+		// (1) reset the computation graph
+		dynet::ComputationGraph cg;
+
+		// (2) pre-compute the source embedding representation
+		// FIXME: this step is repeated for every iteration?
+		//std::cerr << "GDDecode:3:(1)" << std::endl;
+		if (bam_ != nullptr){
+			bam_->s2t_model.ComputeTrgWordEmbeddingMatrix(cg);// source-to-target
+			bam_->s2t_model.StartNewInstance(i_src_sent, cg, 0);
+			bam_->t2s_model.ComputeSrcWordEmbeddingMatrix(cg);// target-to-source
+		}
+		else{
+			am_->ComputeTrgWordEmbeddingMatrix(cg);// source-to-target/left-to-right model
+			am_->StartNewInstance(i_src_sent, cg, 0);
+		}
+		if (relopt_cf.jdec_bidir_alpha > 0.f
+			&& relopt_cf.jdec_bidir_alpha < 1.f){
+			am_r2l_->ComputeTrgWordEmbeddingMatrix(cg);// right-to-left model
+			am_r2l_->StartNewInstance(i_src_sent, cg, 0);
+		}
+		if (relopt_cf.jdec_mlm_alpha > 0.f
+			&& relopt_cf.jdec_mlm_alpha < 1.f){
+			rnnlm_->ComputeWordEmbeddingMatrix(cg);// monolingual RNN language model
+		}
+		if (relopt_cf.jdec_biling_alpha > 0.f
+			&& relopt_cf.jdec_biling_alpha < 1.f){
+			am_t2s_->ComputeSrcWordEmbeddingMatrix(cg);// target-to-source model
+		}
+
+		// (3) build relaxed optimization graph
+		//std::cerr << "GDDecode:3:(2a)" << std::endl;
+		// left-to-right/source-to-target AM model
+		dynet::expr::Expression i_alignment, i_coverage, i_glofer_nll, i_entropy;
+		dynet::expr::Expression i_cost;
+		if (bam_ != nullptr)
+			i_cost =  (1.f/(float)(L + 1)) * bam_->s2t_model.BuildRelOptGraph(
+					relopt_cf.algorithm
+					, v_relopt_params
+					, cg
+					, *vocab_trg_
+					, false //left-to-right model (default)
+					, &i_entropy
+					, &i_alignment
+					, (relopt_cf.coverage_weight > 0.f) ? &i_coverage : nullptr, relopt_cf.coverage_C
+					, (relopt_cf.glofer_weight > 0.f) ? &i_glofer_nll : nullptr);// normalized sum of negative log likelihoods (NLL)
+		else
+			i_cost =  (1.f/(float)(L + 1)) * am_->BuildRelOptGraph(
+					relopt_cf.algorithm
+					, v_relopt_params
+					, cg
+					, *vocab_trg_
+					, false //left-to-right model (default)
+					, &i_entropy
+					, &i_alignment
+					, (relopt_cf.coverage_weight > 0.f) ? &i_coverage : nullptr, relopt_cf.coverage_C
+					, (relopt_cf.glofer_weight > 0.f) ? &i_glofer_nll : nullptr);// normalized sum of negative log likelihoods (NLL)
+		//std::cerr << "GDDecode:3:(2b)" << std::endl;
+		// right-to-left AM model
+		dynet::expr::Expression i_cost_r2l;
+		if (relopt_cf.jdec_bidir_alpha > 0.f
+			&& relopt_cf.jdec_bidir_alpha < 1.f){
+			i_cost_r2l = (1.f/(float)(L + 1)) * am_r2l_->BuildRelOptGraph(
+					relopt_cf.algorithm
+					, v_relopt_params /*target*/
+					, cg
+					, *vocab_trg_
+					, true //right-to-left model
+					, nullptr
+					, nullptr
+					, nullptr, 0
+					, nullptr);// normalized sum of negative log likelihoods (NLL)
+		}
+		//std::cerr << "GDDecode:3:(2c)" << std::endl;
+		// target-to-source AM model
+		dynet::expr::Expression i_cost_t2s;
+		dynet::expr::Expression i_alignment_t2s;
+		if (bam_ != nullptr){
+			i_cost_t2s = (1.f/(float)(i_src_sent.size() - 1)) * bam_->t2s_model.BuildRevRelOptGraph(
+					relopt_cf.algorithm
+					, v_relopt_params /*source*/
+					, i_src_sent /*target*/
+					, cg
+					, *vocab_src_
+					, &i_alignment_t2s);// normalized sum of negative log likelihoods (NLL)
+		}
+		else{
+			if (relopt_cf.jdec_biling_alpha > 0.f && relopt_cf.jdec_biling_alpha < 1.f){
+				i_cost_t2s = (1.f/(float)(i_src_sent.size() - 1)) * am_t2s_->BuildRevRelOptGraph(
+					relopt_cf.algorithm
+					, v_relopt_params /*source*/
+					, i_src_sent /*target*/
+					, cg
+					, *vocab_src_
+					, &i_alignment_t2s);// normalized sum of negative log likelihoods (NLL)
+			}
+		}
+		//std::cerr << "GDDecode:3:(2d)" << std::endl;
+		dynet::expr::Expression i_cost_mlm;
+		if (relopt_cf.jdec_mlm_alpha > 0.f
+			&& relopt_cf.jdec_mlm_alpha < 1.f){
+			i_cost_mlm = (1.f/(float)(L + 1)) * rnnlm_->BuildRelOptGraph( relopt_cf.algorithm
+					, v_relopt_params
+					, cg
+					, *vocab_trg_);// left-to-right or right-to-left direction will be implicitly recognized in model file.
+		}
+
+		// (4) compute the additional costs if required
+		//std::cerr << "GDDecode:3:(3)" << std::endl;
+		dynet::expr::Expression i_objective = relopt_cf.m_weight * i_cost;// NLL
+		// coverage penalty
+		if (relopt_cf.coverage_weight > 0.f){
+			i_objective = i_objective + (1.f/(float)(L + 1)) * relopt_cf.coverage_weight * i_coverage;// FIXME: normalization for coverage is required!
+		}
+		// global fertility
+		if (relopt_cf.glofer_weight > 0.f){
+			i_objective = i_objective + (1.f/(float)(L + 1)) * relopt_cf.glofer_weight * i_glofer_nll;// FIXME: normalization for glofer is required!
+		}
+		// joint decoding in bidirectional models
+		if (relopt_cf.jdec_bidir_alpha > 0.f
+			&& relopt_cf.jdec_bidir_alpha < 1.f){
+			i_objective = i_objective + relopt_cf.jdec_bidir_alpha * i_cost_r2l;
+		}
+		// joint decoding in bilingual models
+		if ((relopt_cf.jdec_biling_alpha > 0.f
+			&& relopt_cf.jdec_biling_alpha < 1.f) || bam_ != nullptr){
+			i_objective = i_objective + relopt_cf.jdec_biling_alpha * i_cost_t2s;
+			if (relopt_cf.jdec_biling_trace_alpha != 0.f){
+				// if required, add a trace bonus of i_alignment and i_alignment_t2s following Cohn et al., 2016.
+				dynet::expr::Expression i_trace_bonus = trace_of_product(i_alignment, transpose(i_alignment_t2s));// FIXME: this trace_of_product is not supporting CUDA yet!
+				i_objective = i_objective - relopt_cf.jdec_biling_trace_alpha * i_trace_bonus;
+			}
+		}
+		// joint decoding with monolingual RNN language model
+		if (relopt_cf.jdec_mlm_alpha > 0.f
+			&& relopt_cf.jdec_mlm_alpha < 1.f){
+			i_objective = i_objective + relopt_cf.jdec_mlm_alpha * i_cost_mlm;
+		}
+		// entropy regularizer for SOFTMAX or SPARSEMAX
+		if (relopt_cf.algorithm == RELOPT_ALGO::SOFTMAX
+			|| relopt_cf.algorithm == RELOPT_ALGO::SPARSEMAX)
+			i_objective = i_objective + relopt_cf.ent_gamma * i_entropy;
+
+		// (5) do forward propagation step
+		//std::cerr << "GDDecode:3:(4a)" << std::endl;
+		cg.incremental_forward(i_objective);
+
+		// grap the parts of the objective
+		//std::cerr << "GDDecode:3:(4b)" << std::endl;
+		float fcost = as_scalar(cg.get_value(i_cost.i));
+		float fcoverage = 0.f;
+		if (relopt_cf.coverage_weight > 0.f) {
+			fcoverage = as_scalar(cg.get_value(i_coverage.i));
+		}
+		float fglofer = 0.f;
+		if (relopt_cf.glofer_weight > 0.f){
+			fglofer = as_scalar(cg.get_value(i_glofer_nll.i));
+		}
+		float fobj = as_scalar(cg.get_value(i_objective.i));
+		float fcost_r2l = 0.f;
+		if (relopt_cf.jdec_bidir_alpha > 0.f
+			&& relopt_cf.jdec_bidir_alpha < 1.f)
+			fcost_r2l = as_scalar(cg.get_value(i_cost_r2l.i));
+		float fcost_t2s = 0.f;
+		if (relopt_cf.jdec_biling_alpha > 0.f
+			&& relopt_cf.jdec_biling_alpha < 1.f)
+			fcost_t2s = as_scalar(cg.get_value(i_cost_t2s.i));
+		float fcost_mlm = 0.f;
+		if (relopt_cf.jdec_mlm_alpha > 0.f
+			&& relopt_cf.jdec_mlm_alpha < 1.f)
+			fcost_mlm = as_scalar(cg.get_value(i_cost_mlm.i));
+
+		// (6) do backpropagation step (including computation of gradients which are stored in relopt_model)
+		//std::cerr << "GDDecode:3:(5)" << std::endl;
+		cg.backward(i_objective);// backpropagate for all nodes
+
+		// (7) update inference parameters with requested optimization method (e.g., SGD, EG)
+		//std::cerr << "GDDecode:3:(6)" << std::endl;
+		float scale = 1.f;// FIXME: can be used if required!
+		float clr = relopt_cf.eta / std::pow(1.f + t * relopt_cf.eta_decay, relopt_cf.eta_power);// simple learning rate annealing
+		trainer->eta = clr;
+		trainer->update(scale);// only update inference parameters
+
+		//---------------------------------------------------------------------------------------------------
+		// (8) adaptive learning rate with respect to the target word position (Reza's idea)
+		// FIXME: work in progress
+		/*
+		int updated_index = -1;
+		unsigned iter_count = 0;
+		float lr_decay;
+		while (fcost > fcost_prev){
+			if (updated_index == -1){// make sure to compute gradient magnitudes once only!
+				// compute magnitude vector ||g|| (or norm) of gradients (L* elements) (and sort it in an ascending order)
+				//cerr << gnorms[0] << "--" << gnorms[1] << endl;
+				relopt_model.project_weights(gnorms);
+				for (int i = 0; i < L; i++)
+					cerr << gnorms[i] << "--";
+				cerr << endl;
+				std::vector<int> indices_sorted = indices;
+				std::sort(indices_sorted.begin(), indices_sorted.end(), [gnorms](int i1, int i2) { return gnorms[i1] < gnorms[i2]; });
+				for (auto& i : indices_sorted)
+					cerr << i << "--";
+				cerr << endl;
+			}
+
+			if (updated_index != -1){
+				// reject previous update
+				((ModifiedEGTrainer*)trainer)->reject_param_update(updated_index, lr_decay);
+
+				updated_index = -1;
+			}
+
+			if (iter_count > L) break;// to prevent infinite loop
+
+			// sample an index i from [1..L*] with probability proportional to ||g_i||
+			int sampled_index = distribution(generator);
+			cerr << "sampled_index=" << sampled_index << endl;
+
+			// adapt the learning rate for parameter p_i by decay factor, e.g., eta_i /= eta_decay or eta_i *= eta_decay
+			// param index: indices_sorted[sampled_index]
+			if (sampled_index > L/2){// eta_i /= eta_decay
+				lr_decay = 1.f / eta_decay;
+			}
+			else// eta_i *= eta_decay
+			{
+				lr_decay = eta_decay;
+			}
+
+			// request an update for the parameter p_i with new learning rate eta_i
+			((ModifiedEGTrainer*)trainer)->request_param_update(updated_index, lr_decay, scale);
+
+			// recompute the f_cost
+			dynet::expr::Expression i_cost = am_->BuildRelOptGraph(
+					relopt_cf.algorithm
+					, v_relopt_params
+					, cg
+					, *vocab_trg_
+					, nullptr
+					, nullptr
+					, nullptr);// sum of negative log likelihoods (NLL)
+			fcost = as_scalar(cg.incremental_forward(i_cost));// here, we will not go backward!
+
+			iter_count++;
+		}
+
+		// accept the current updates and go to next iteration
+		if (updated_index != -1){
+			cg.backward(i_cost);// FIXME: how to deal with additional soft constraints
+			trainer->update(scale);// only update inference parameters
+		}*/
+		//---------------------------------------------------------------------------------------------------
+
+		// verbose output
+		//std::cerr << "GDDecode:3:(7)" << std::endl;
+		if (verbose_) cerr << "All costs at step "
+			<< t << ": "
+			<< "l2r_nll=" << fcost
+			<< "; r2l_nll=" << fcost_r2l
+			<< "; t2s_nll=" << fcost_t2s
+			<< "; mlm_nll=" << fcost_mlm
+			<< "; C_coverage=" << fcoverage
+			<< "; glofer_fertility=" << fglofer
+			<< "; total_objective=" << fobj << endl;
+		string decoded_sent = am_->GetRelOptOutput(cg, v_relopt_params, relopt_cf.algorithm, *vocab_trg_, verbose_);
+		if (verbose_) cerr << "Result at step " << t << ": " << decoded_sent << " (discrete cost=" << GetNLLCost(src_sent, decoded_sent, cg) << ")" << endl;
+
+		// (9) update the best result so far
+		//std::cerr << "GDDecode:3:(8)" << std::endl;
+		if (fcost < best_fcost){// FIXME: fobj or fcost?
+			best_fcost = fcost;
+			best_sent = decoded_sent;
+			best_t = t;
+		}
+
+		// simple stopping criterion if change in costs is very small!
+		if (t >= 1 && std::abs(prev_fcost - fcost) < 0.0001f)// FIXME: maybe smaller???
+			break;
+
+		prev_fcost = fcost;// update previous cost
+
+		t++;// next iteration
+
+		cg.clear();
+	}
+
+	if (verbose_) cerr << "***Best decoding result at step " << best_t << " (continuous cost=" << best_fcost << ")" << endl;
+
+	//dynet::default_device->mem->free(gnorms);// free allocated memory for gnorms
+
+	delete hyper_trainer;
 	delete trainer;
 
 	return RelOptOutput(best_sent, best_fcost, best_t);

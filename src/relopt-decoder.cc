@@ -149,6 +149,8 @@ int main_body(variables_map vm)
 	string line;
 	cerr << "Reading training data from " << vm["train"].as<string>() << "...\n";
 	training = Read_Corpus(vm["train"].as<string>(), doco);
+	kSRC_UNK = sd.convert("<unk>");// add <unk> if does not exist!
+	kTGT_UNK = td.convert("<unk>");
 	sd.freeze(); // no new word types allowed
 	td.freeze(); // no new word types allowed
 	

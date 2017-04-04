@@ -61,13 +61,21 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 	Trainer &sgd, string out_file, bool curriculum, int max_epochs, int lr_epochs,
 	bool doco, float coverage, bool display, bool fert, float fert_weight);
 
-template <class AM_t> void Test_Rescore(Model &model, AM_t &am, Corpus &testing, bool doco);
-template <class AM_t> void Test_Decode(Model &model, AM_t &am, std::string test_file, bool doco, unsigned beam, bool r2l_target=false);
+template <class AM_t> void Test_Rescore(Model &model
+	, AM_t &am
+	, Corpus &testing
+	, bool doco);
+template <class AM_t> void Test_Decode(Model &model
+	, AM_t &am, std::string test_file
+	, bool doco
+	, unsigned beam
+	, bool r2l_target=false);
 template <class AM_t> void Test_Decode_Nbest(Model &model
 	, AM_t &am
 	, string test_file
 	, unsigned beam
 	, unsigned nbest_size
+	, bool print_nbest_scores
 	, bool r2l_target=false);
 template <class AM_t> void Test_Kbest_Arcs(Model &model, AM_t &am, string test_file, unsigned top_k);
 template <class AM_t> void Show_Fert_Stats(Model &model, AM_t &am, Corpus &devel, bool global_fert);
@@ -100,6 +108,7 @@ int main(int argc, char** argv) {
 		("rescore,r", "rescore (source, target) pairs in testing, default: translate source only")
 		("beam,b", value<unsigned>()->default_value(0), "size of beam in decoding; 0=greedy")
 		("nbest_size", value<unsigned>()->default_value(1), "nbest size of translation generation/decoding; 1 by default")
+		("print_nbest_scores", "print nbest translations with their scores; no by default")
 		("kbest,K", value<string>(), "test on kbest inputs using monolingual Markov model")
 		//-----------------------------------------
 		("minibatch_size", value<unsigned>()->default_value(1), "impose the minibatch size for training (support both GPU and CPU); no by default")
@@ -370,24 +379,30 @@ int main_body(variables_map vm)
 	else if (vm.count("kbest"))
 		Test_Kbest_Arcs(model, am, vm["kbest"].as<string>(), vm["topk"].as<unsigned>());
 	else if (vm.count("test")) {
-		cerr << "Testing..." << endl;
-		if (vm.count("rescore"))//e.g., compute perplexity scores
+		if (vm.count("rescore")){//e.g., compute perplexity scores
+			cerr << "Rescoring..." << endl;
 			Test_Rescore(model, am, testing, doco);
+		}
 		else{ // test/decode
-			if (vm["nbest_size"].as<unsigned>() > 1)
+			if (vm["nbest_size"].as<unsigned>() > 1){
+				cerr <<  vm["nbest_size"].as<unsigned>() << "-best Decoding..." << endl;
 				Test_Decode_Nbest(model
 					, am
 					, vm["test"].as<string>()
 					, vm["beam"].as<unsigned>()
 					, vm["nbest_size"].as<unsigned>()
+					, vm.count("print_nbest_scores")
 					, r2l_target);
-			else
+			}
+			else{
+				cerr << "Decoding..." << endl;			
 				Test_Decode(model
 					, am
 					, vm["test"].as<string>()
 					, doco
 					, vm["beam"].as<unsigned>()
 					, r2l_target);
+			}
 		}
 	
 		cerr << "Decoding completed!" << endl;
@@ -415,26 +430,28 @@ void Test_Rescore(Model &model, AM_t &am, Corpus &testing, bool doco)
 	for (unsigned i = 0; i < testing.size(); ++i) {
 		tie(ssent, tsent, docid) = testing[i];
 
-	ComputationGraph cg;
+		ComputationGraph cg;
 		auto i_xent = am.BuildGraph(ssent, tsent, cg, tstats, nullptr, (doco) ? GetContext(testing, i) : nullptr);
 
-	double loss = as_scalar(cg.forward(i_xent));
-		cout << i << " |||";
-	for (auto &w: ssent)
-		cout << " " << sd.convert(w);
-	cout << " |||";
-	for (auto &w: tsent)
-		cout << " " << td.convert(w);
-	cout << " ||| " << (loss / (tsent.size()-1)) << endl;
+		double loss = as_scalar(cg.forward(i_xent));
+		//cout << i << " |||";
+		for (auto &w: ssent)
+			cout << " " << sd.convert(w);
+		cout << " |||";
+		for (auto &w: tsent)
+			cout << " " << td.convert(w);
+		cout << " ||| " << (loss / (tsent.size()-1)) << endl;
 
-	tstats.loss += loss;
-	tstats.words_tgt += tsent.size() - 1;
+		tstats.loss += loss;
+		tstats.words_tgt += tsent.size() - 1;
 
-	if (verbose)
-		cerr << "chug " << lno++ << "\r" << flush;
+		if (verbose)
+			cerr << "chug " << lno++ << "\r" << flush;
 	}
 
-	cout << "\n***TEST E=" << (tstats.loss / tstats.words_tgt) << " ppl=" << exp(tstats.loss / tstats.words_tgt) << ' ' << endl;
+	if (verbose)
+		cout << "\n***TEST E=" << (tstats.loss / tstats.words_tgt) << " ppl=" << exp(tstats.loss / tstats.words_tgt) << ' ' << endl;
+
 	return;
 }
 
@@ -516,20 +533,24 @@ void Test_Decode_Nbest(Model &model
 		, string test_file
 		, unsigned beam
 		, unsigned nbest_size
+		, bool print_nbest_scores
 		, bool r2l_target)
 {
-	int lno = 0;
-
 	EnsembleDecoder<AM_t> edec(std::vector<AM_t*>({&am}), &td);//FIXME: single decoder for now
 	edec.SetBeamSize(beam);
 
 	cerr << "Reading test examples from " << test_file << endl;
+
 	ifstream in(test_file);
 	assert(in);
-	
+
+	int lno = 0;	
 	string line;
 	Sentence source;
 	while (getline(in, line)) {
+		if (verbose)
+			cerr << "Decoding sentence " << lno << "..." << endl;	
+
 		source = read_sentence(line, sd);
 
 		if (source.front() != kSRC_SOS && source.back() != kSRC_EOS) {
@@ -540,7 +561,9 @@ void Test_Decode_Nbest(Model &model
 		ComputationGraph cg;
 		std::vector<int> target;
 		float score = 0.f;
+		if (verbose) cerr << "Executing GenerateNbest(...)... ";
 		std::vector<EnsembleDecoderHypPtr> v_trg_hyps = edec.GenerateNbest(source, nbest_size, cg);
+		if (verbose) cerr << "Done!" << endl;
 		for (auto& trg_hyp : v_trg_hyps){
 			if (trg_hyp.get() == nullptr) {
 				target.clear();
@@ -575,7 +598,8 @@ void Test_Decode_Nbest(Model &model
 			}
 		
 			// score
-			ss << " ||| " << score;
+			if (print_nbest_scores)
+				ss << " ||| " << score;
 		
 			ss << endl;
 
