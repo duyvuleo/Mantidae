@@ -1558,7 +1558,7 @@ void AttentionalModel<Builder>::Display_ASCII(const std::vector<int> &source, co
 		float max_v = 0;
 		int max_j = -1;
 		for (unsigned j = 0; j < J; ++j) {
-			float v = TensorTools::AccessElement(a, Dim({(unsigned int)j, (unsigned int)i}));
+			float v = TensorTools::access_element(a, Dim({(unsigned int)j, (unsigned int)i}));
 			string symbol;
 			for (int s = 0; s <= num_symbols; ++s) {
 				if (s == 0) 
@@ -1604,7 +1604,7 @@ void AttentionalModel<Builder>::Display_TIKZ(const std::vector<int> &source, con
 	float eps = 0.01;
 	for (unsigned i = 0; i < I; ++i) {
 		for (unsigned j = 0; j < J; ++j) {
-			float v = TensorTools::AccessElement(a, Dim({(unsigned int)j, (unsigned int)i}));
+			float v = TensorTools::access_element(a, Dim({(unsigned int)j, (unsigned int)i}));
 			//int val = int(pow(v, 0.5) * 100);
 			int val = int(v * 100);
 			cout << "\\fill[blue!" << val << "!black] (" << j+eps << ", " << I-i-1+eps << ") rectangle (" << j+1-eps << "," << I-i-eps << ");\n";

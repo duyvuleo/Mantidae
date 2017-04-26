@@ -120,7 +120,7 @@ struct BiAttentionalModel {
 		assert(lparams.size() == 2*sm.lookup_parameters_list().size());
 		for (const auto &p : sm.lookup_parameters_list())  {
 			for (unsigned i = 0; i < p->values.size(); ++i) 
-				dynet::TensorTools::CopyElements(lparams[lid]->values[i], p->values[i]);
+				dynet::TensorTools::copy_elements(lparams[lid]->values[i], p->values[i]);
 			//#if HAVE_CUDA
 			//	CUDA_CHECK(cudaMemcpy(lparams[lid]->values[i].v, &p->values[i].v[0], sizeof(dynet::real) * p->values[i].d.size(), cudaMemcpyDeviceToHost));
 			//#else
@@ -131,7 +131,7 @@ struct BiAttentionalModel {
 
 		for (const auto &p : tm.lookup_parameters_list()) {
 			for (unsigned i = 0; i < p->values.size(); ++i) 
-				dynet::TensorTools::CopyElements(lparams[lid]->values[i], p->values[i]);
+				dynet::TensorTools::copy_elements(lparams[lid]->values[i], p->values[i]);
 			//#if HAVE_CUDA
 			//	CUDA_CHECK(cudaMemcpy(lparams[lid]->values[i].v, &p->values[i].v[0], sizeof(dynet::real) * p->values[i].d.size(), cudaMemcpyDeviceToHost));
 			//#else
@@ -144,7 +144,7 @@ struct BiAttentionalModel {
 		unsigned did = 0;
 		auto &dparams = model.parameters_list();
 		for (const auto &p : sm.parameters_list()) {
-			dynet::TensorTools::CopyElements(dparams[did++]->values, p->values);
+			dynet::TensorTools::copy_elements(dparams[did++]->values, p->values);
 			//#if HAVE_CUDA
 			//	CUDA_CHECK(cudaMemcpy(dparams[did++]->values.v, &p->values.v[0], sizeof(dynet::real) * p->values.d.size(), cudaMemcpyDeviceToHost));
 			//#else
@@ -152,7 +152,7 @@ struct BiAttentionalModel {
 			//#endif
 		}
 		for (const auto &p : tm.parameters_list()) {
-			dynet::TensorTools::CopyElements(dparams[did++]->values, p->values);
+			dynet::TensorTools::copy_elements(dparams[did++]->values, p->values);
 			//#if HAVE_CUDA
 			//	CUDA_CHECK(cudaMemcpy(dparams[did++]->values.v, &p->values.v[0], sizeof(dynet::real) * p->values.d.size(), cudaMemcpyDeviceToHost));
 			//#else

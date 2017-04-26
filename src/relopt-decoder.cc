@@ -333,7 +333,9 @@ int main_body(variables_map vm)
 			std::get<0>(avg_scores[j]) += gcost_ref;// discrete cost of reference
 			std::get<1>(avg_scores[j]) += ir.cost;// fractional/continuous cost of inference result
 			std::get<2>(avg_scores[j]) += gcost_inf;// discrete cost of inference result
-			if (vm.count("verbose")) 
+			//if (vm.count("verbose")) 
+				cerr << "Reference's discrete cost=" << gcost_ref << endl;
+				cerr << "Inference result's continuous cost=" << ir.cost << endl;
 				cerr << "Inference result's discrete cost=" << gcost_inf << endl;
 		}
 		if (vm.count("verbose")) cerr << endl;

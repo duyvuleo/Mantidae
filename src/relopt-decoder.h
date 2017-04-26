@@ -287,6 +287,13 @@ void RelOptDecoder<AM_t,BAM_t,RNNLM_t>::InitializeParameters(const std::string& 
 		Sentence i_src_sent = ParseWords(*vocab_src_, src);
 		Sentence i_trg_sent = ParseWords(*vocab_trg_, trg_ref);
 
+		int ibos = vocab_trg_->convert("<s>");
+		int ieos = vocab_trg_->convert("</s>");
+		if (*(i_trg_sent.begin()) != ibos)
+			i_trg_sent.insert(i_trg_sent.begin(), ibos);
+		if (*(i_trg_sent.end()-1) != ieos)
+			i_trg_sent.push_back(ieos);
+
 		// reset the computation graph
 		dynet::ComputationGraph cg;
 

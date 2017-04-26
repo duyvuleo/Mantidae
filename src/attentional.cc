@@ -82,7 +82,11 @@ template <class AM_t> void Show_Fert_Stats(Model &model, AM_t &am, Corpus &devel
 
 const Sentence* GetContext(const Corpus &corpus, unsigned i);
 
-Corpus Read_Corpus(const string &filename, bool doco, bool cid=true/*corpus id, 1:train;0:otherwise*/, unsigned slen=0, bool r2l_target=false, unsigned eos_padding=0);
+Corpus Read_Corpus(const string &filename, bool doco
+		, bool cid=true/*corpus id, 1:train;0:otherwise*/
+		, unsigned slen=0, bool r2l_target=false
+		, unsigned eos_padding=0
+		, bool swap=false);
 std::vector<int> Read_Numbered_Sentence(const std::string& line, Dict* sd, std::vector<int> &ids);
 void Read_Numbered_Sentence_Pair(const std::string& line, std::vector<int>* s, Dict* sd, std::vector<int>* t, Dict* td, std::vector<int> &ids);
 
@@ -157,6 +161,7 @@ int main(int argc, char** argv) {
 		("curriculum", "use 'curriculum' style learning, focusing on easy problems (e.g., shorter sentences) in earlier epochs")
 		//-----------------------------------------
 		("swap", "swap roles of source and target, i.e., learn p(source|target)")
+		("swap_T", "swap roles of source and target on --test or -T, applied for rescoring only")
 		//-----------------------------------------
 		("document,D", "use previous sentence as document context; requires document id prefix in input files")
 		//-----------------------------------------
@@ -271,7 +276,7 @@ int main_body(variables_map vm)
 	if (vm.count("test") && vm.count("rescore")) {
 		// otherwise "test" file is assumed just to contain source language strings
 		cerr << "Reading test examples from " << vm["test"].as<string>() << endl;
-		testing = Read_Corpus(vm["test"].as<string>(), doco, false/*for development/testing*/, 0, r2l_target & !swap);
+		testing = Read_Corpus(vm["test"].as<string>(), doco, false/*for development/testing*/, 0, r2l_target & !swap, 0, vm.count("swap_T"));
 	}
 
 	if (swap) {
@@ -297,14 +302,20 @@ int main_body(variables_map vm)
 				std::reverse(tsent.begin() + 1, tsent.end() - 1);
 			}
 		}
-
+	
 		for (auto &sent: testing){
-			std::swap(get<0>(sent), get<1>(sent));
+			if (!vm.count("swap_T"))
+				std::swap(get<0>(sent), get<1>(sent));
 			if (r2l_target){
 				Sentence &tsent = get<1>(sent);
 				std::reverse(tsent.begin() + 1, tsent.end() - 1);
 			}
 		}
+	}
+
+	if (vm.count("rescore") && !swap && vm.count("swap_T")){
+		for (auto &sent: testing)
+			std::swap(get<0>(sent), get<1>(sent));			
 	}
 
 	string fname;
@@ -440,6 +451,7 @@ void Test_Rescore(Model &model, AM_t &am, Corpus &testing, bool doco)
 		cout << " |||";
 		for (auto &w: tsent)
 			cout << " " << td.convert(w);
+		
 		cout << " ||| " << (loss / (tsent.size()-1)) << endl;
 
 		tstats.loss += loss;
@@ -536,7 +548,7 @@ void Test_Decode_Nbest(Model &model
 		, bool print_nbest_scores
 		, bool r2l_target)
 {
-	EnsembleDecoder<AM_t> edec(std::vector<AM_t*>({&am}), &td);//FIXME: single decoder for now
+	EnsembleDecoder<AM_t> edec(std::vector<AM_t*>({&am}), &td);//FIXME: single decoder for now!
 	edec.SetBeamSize(beam);
 
 	cerr << "Reading test examples from " << test_file << endl;
@@ -578,7 +590,7 @@ void Test_Decode_Nbest(Model &model
 				//MapWords(str_src, sent_trg, align, mapping, str_trg);
 			}
 
-			if (target.size() < 2) continue;// <s> ... </s>
+			if (target.size() < 2) continue;// FIXME: <=2, e.g., <s> ... </s>?
 		
 			if (r2l_target)
 		   		std::reverse(target.begin() + 1, target.end() - 1);
@@ -587,7 +599,7 @@ void Test_Decode_Nbest(Model &model
 			stringstream ss;
 
 			// source text
-			ss << line << " ||| ";
+			ss /*<< lno << " ||| "*/ << line << " ||| ";// FIXME: line number?
 		   
 			// target text
 			bool first = true;
@@ -598,8 +610,9 @@ void Test_Decode_Nbest(Model &model
 			}
 		
 			// score
-			if (print_nbest_scores)
-				ss << " ||| " << score;
+			if (print_nbest_scores){
+				ss << " ||| " << "AM=" << -score / (target.size() - 1) << " ||| " << -score / (target.size() - 1);//normalize by target length, following Moses's N-best format.
+			}
 		
 			ss << endl;
 
@@ -1217,7 +1230,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 	cerr << endl << "Training completed!" << endl;
 }
 
-Corpus Read_Corpus(const string &filename, bool doco, bool cid, unsigned slen, bool r2l_target, unsigned eos_padding)
+Corpus Read_Corpus(const string &filename, bool doco, bool cid, unsigned slen, bool r2l_target, unsigned eos_padding, bool swap)
 {
 	ifstream in(filename);
 	assert(in);
@@ -1227,10 +1240,18 @@ Corpus Read_Corpus(const string &filename, bool doco, bool cid, unsigned slen, b
 	vector<int> identifiers({ -1 });
 	while (getline(in, line)) {
 		Sentence source, target;
-		if (doco) 
-			Read_Numbered_Sentence_Pair(line, &source, &sd, &target, &td, identifiers);
-		else
-			read_sentence_pair(line, source, sd, target, td);
+		if (!swap){
+			if (doco) 
+				Read_Numbered_Sentence_Pair(line, &source, &sd, &target, &td, identifiers);
+			else
+				read_sentence_pair(line, source, sd, target, td);
+		}
+		else{
+			if (doco) 
+				Read_Numbered_Sentence_Pair(line, &source, &td, &target, &sd, identifiers);
+			else
+				read_sentence_pair(line, source, td, target, sd);
+		}
 
 		// reverse the target if required
 		if (r2l_target) 

@@ -262,7 +262,10 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 
 			EnsembleDecoderHypPtr hyp(new EnsembleDecoderHyp(score, last_states[hypid], next_sent, next_align));
 
-			if(wid == eos_sym || sent_len == size_limit_) 
+			if(wid == eos_sym && hyp->GetSentence().size() == 2) //as of 26 April 2017: excluding: <s> </s>
+				continue;
+
+			if(wid == eos_sym || sent_len == size_limit_)
 				nbest.push_back(hyp);
 
 			next_beam.push_back(hyp);
