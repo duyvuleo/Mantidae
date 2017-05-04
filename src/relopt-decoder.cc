@@ -75,11 +75,18 @@ int main(int argc, char** argv) {
 		("relopt_coverage_weight", value<float>()->default_value(0.f), "The coverage penalty weight")
 		("relopt_coverage_C", value<float>()->default_value(1.f), "The coverage C (e.g., >=1 and <=3")
 		("relopt_glofer_weight", value<float>()->default_value(0.f), "The global fertility weight")
-		("jdec_bidir_alpha", value<float>()->default_value(0.f), "The interpolation weight for joint decoding in bidirectional models")
-		("jdec_biling_alpha", value<float>()->default_value(0.f), "The interpolation weight for joint decoding in bilingual models")
-		("jdec_biling_trace_alpha", value<float>()->default_value(0.f), "The trace bonus weight for joint decoding in bilingual models")
-		("jdec_mlm_alpha", value<float>()->default_value(0.f), "The interpolation weight for joint decoding with additional language model(s)")
-		("ent_gamma", value<float>()->default_value(1.f), "The hyper-parameter for weighting the entropy regularizer of SOFTMAX or SPARSEMAX")
+		("relopt_jdec_bidir_alpha", value<float>()->default_value(0.f), "The interpolation weight for joint decoding in bidirectional models")
+		("relopt_jdec_biling_alpha", value<float>()->default_value(0.f), "The interpolation weight for joint decoding in bilingual models")
+		("relopt_jdec_biling_trace_alpha", value<float>()->default_value(0.f), "The trace bonus weight for joint decoding in bilingual models")
+		("relopt_jdec_mlm_alpha", value<float>()->default_value(0.f), "The interpolation weight for joint decoding with additional language model(s)")
+		("relopt_clr_lb_eta", value<float>()->default_value(0.f), "the lower bound of eta for EG with cyclical learning rate")
+		("relopt_clr_ub_eta", value<float>()->default_value(0.f), "the uppper bound of eta for EG with cyclical learning rate")
+		("relopt_clr_stepsize", value<float>()->default_value(0.f), "the stepsize for EG with cyclical learning rate")
+		("relopt_clr_gamma", value<float>()->default_value(0.f), "the gamma for EG with cyclical learning rate")
+		("relopt_adam_beta_1", value<float>()->default_value(0.9f), "the beta_1 hyperparameter of Adam-based EG")
+		("relopt_adam_beta_2", value<float>()->default_value(0.999f), "the beta_2 hyperparameter of Adam-based EG")
+		("relopt_adam_eps", value<float>()->default_value(1e-8), "the epsion hyperparameter of Adam-based EG")
+		("relopt_ent_gamma", value<float>()->default_value(1.f), "The hyper-parameter for weighting the entropy regularizer of SOFTMAX or SPARSEMAX")
 		("relopt_add_extra_words", value<unsigned>()->default_value(0), "No. of extra words added")
 		("src_in", value<string>()->default_value(""), "File to read the source from")
 		("ref_in", value<string>()->default_value(""), "File to read the reference from")
@@ -87,6 +94,7 @@ int main(int argc, char** argv) {
 		("cline", value<unsigned>()->default_value(0), "line number to be continued for processing (used in a crashed running)")
 		//-----------------------------------------		
 		("verbose,v", "be extremely chatty")
+		("timing", "enable timing benchmarking")
 	;
 	store(parse_command_line(argc, argv, opts), vm); 
 	if (vm.count("config") > 0)
@@ -127,6 +135,7 @@ int main_body(variables_map vm)
 	kTGT_SOS = td.convert("<s>");
 	kTGT_EOS = td.convert("</s>");
 	verbose = vm.count("verbose");
+	bool timing = vm.count("timing");
 
 	SLAYERS = vm["slayers"].as<unsigned>();
 	TLAYERS = vm["tlayers"].as<unsigned>();  
@@ -227,7 +236,7 @@ int main_body(variables_map vm)
 	BiAttentionalModel<rnn_t>* p_bam = nullptr;
 	if (vm.count("initialise_bam")){
 		cerr << "*Loading biattentional (integrated source-to-target and target-to-source) BAM model..." << endl;
-		p_bam = new BiAttentionalModel<rnn_t>(&model_bam, bidir, giza_pos, giza_markov, giza_fert, doco, fert, vm["jdec_biling_trace_alpha"].as<float>());
+		p_bam = new BiAttentionalModel<rnn_t>(&model_bam, bidir, giza_pos, giza_markov, giza_fert, doco, fert, vm["relopt_jdec_biling_trace_alpha"].as<float>());
    		Initialise(model_bam, vm["initialise_bam"].as<string>());
 		cerr << "Count of model parameters: " << model_bam.parameter_count() << endl;
 	}
@@ -259,15 +268,22 @@ int main_body(variables_map vm)
 	relopt_cf.coverage_C = vm["relopt_coverage_C"].as<float>();
 	relopt_cf.glofer_weight = vm["relopt_glofer_weight"].as<float>();
 	relopt_cf.add_extra_words = vm["relopt_add_extra_words"].as<unsigned>();
-	relopt_cf.jdec_bidir_alpha = vm["jdec_bidir_alpha"].as<float>();
-	relopt_cf.jdec_biling_alpha = vm["jdec_biling_alpha"].as<float>();
-	relopt_cf.jdec_biling_trace_alpha = vm["jdec_biling_trace_alpha"].as<float>();
-	relopt_cf.jdec_mlm_alpha = vm["jdec_mlm_alpha"].as<float>();
-	relopt_cf.ent_gamma = vm["ent_gamma"].as<float>();
+	relopt_cf.jdec_bidir_alpha = vm["relopt_jdec_bidir_alpha"].as<float>();
+	relopt_cf.jdec_biling_alpha = vm["relopt_jdec_biling_alpha"].as<float>();
+	relopt_cf.jdec_biling_trace_alpha = vm["relopt_jdec_biling_trace_alpha"].as<float>();
+	relopt_cf.jdec_mlm_alpha = vm["relopt_jdec_mlm_alpha"].as<float>();
+	relopt_cf.ent_gamma = vm["relopt_ent_gamma"].as<float>();
+	relopt_cf.clr_lb_eta = vm["relopt_clr_lb_eta"].as<float>();
+	relopt_cf.clr_ub_eta = vm["relopt_clr_ub_eta"].as<float>();
+	relopt_cf.clr_stepsize = vm["relopt_clr_stepsize"].as<float>();
+	relopt_cf.clr_gamma = vm["relopt_clr_gamma"].as<float>();
+	relopt_cf.adam_beta_1 = vm["relopt_adam_beta_1"].as<float>();
+	relopt_cf.adam_beta_2 = vm["relopt_adam_beta_2"].as<float>();
+	relopt_cf.adam_eps = vm["relopt_adam_eps"].as<float>();
 
 	// Read in the model file
 	cerr << "Loading model(s)...";
-	relopt_decoder.SetVerbose((unsigned)vm.count("verbose"));
+	relopt_decoder.SetVerbose((unsigned)verbose);
 	relopt_decoder.LoadModel(&am
 		, p_am_r2l
 		, p_am_t2s
@@ -303,6 +319,8 @@ int main_body(variables_map vm)
 	std::vector<std::string> lines_ref(refs_in.size());
 	vector<tuple<float,float,float>> avg_scores(refs_in.size(), make_tuple(0.f, 0.f, 0.f));
 	unsigned line_count = 0, line_continued = vm["cline"].as<unsigned>();
+	Timer timer_dec("completed in");
+	DecTimeInfo dti;
 	while (getline(*src_in, line_src)){
 		if ("" == line_src) break;
 
@@ -311,42 +329,72 @@ int main_body(variables_map vm)
 			if ("" == lines_ref[i]) break;
 		}
 
-		// for continuing a crashed run
+		// for continuing a crashed/stopped run
 		if (line_continued > 0 && line_count < line_continued){ 
 			line_count++;
 			continue;
 		}
 
 		cerr << "Processing line " << line_count << "..." << endl;
-		if (vm.count("verbose")) cerr << "Decoding sentence: " << line_src << endl;
-		unsigned j = 0;
+		if (verbose) cerr << "Decoding sentence: " << line_src << endl;
+		unsigned j = 0;		
 		for (auto& ref : lines_ref){
-			if (vm.count("verbose")) cerr << "--------------------" << endl;
-	  		float gcost_ref = relopt_decoder.GetNLLCost(line_src, ref);
-			if (vm.count("verbose"))
+			float gcost_ref = 0.f, gcost_inf = 0.f;
+
+			if (verbose){
+				cerr << "--------------------" << endl;
+			
+				gcost_ref = relopt_decoder.GetNLLCost(line_src, ref);
 				cerr << "Referencing from: " << ref << " (discrete cost=" << gcost_ref << ")" << endl;
-			RelOptOutput ir = relopt_decoder.GDDecode(line_src, ref, relopt_cf);
-			float gcost_inf = relopt_decoder.GetNLLCost(line_src, "<s> " + ir.decoded_sent + " </s>");
-			*trg_out << ir.decoded_sent << endl;
-			if (vm.count("verbose"))
+			}
+
+			RelOptOutput ir;
+			if (!timing)
+				ir = relopt_decoder.GDDecode(line_src, ref, relopt_cf);
+			else ir = relopt_decoder.GDDecode(line_src, ref, relopt_cf, dti);// with timing benchmarking
+
+			*trg_out << ir.decoded_sent << endl;// write to output(s)
+			if (verbose){
+				gcost_inf = relopt_decoder.GetNLLCost(line_src, "<s> " + ir.decoded_sent + " </s>");
+
 				cerr << "Inference result: " << ir.decoded_sent << endl;
-			std::get<0>(avg_scores[j]) += gcost_ref;// discrete cost of reference
-			std::get<1>(avg_scores[j]) += ir.cost;// fractional/continuous cost of inference result
-			std::get<2>(avg_scores[j]) += gcost_inf;// discrete cost of inference result
-			//if (vm.count("verbose")) 
+
+				std::get<0>(avg_scores[j]) += gcost_ref;// discrete cost of reference
+				std::get<1>(avg_scores[j]) += ir.cost;// fractional/continuous cost of inference result
+				std::get<2>(avg_scores[j]) += gcost_inf;// discrete cost of inference result
+
 				cerr << "Reference's discrete cost=" << gcost_ref << endl;
 				cerr << "Inference result's continuous cost=" << ir.cost << endl;
 				cerr << "Inference result's discrete cost=" << gcost_inf << endl;
+			}
+
+			j++;
 		}
-		if (vm.count("verbose")) cerr << endl;
+
+		cerr << endl;
 
 		line_count++;
+
+		//if (line_count == 100) break;// for debug only
 	}
 
-	for (unsigned j = 0; j < refs_in.size(); j++){
-		*costs_out << "Discrete costs of reference" << j << ": total=" << std::get<0>(avg_scores[j]) << " average=" << std::get<0>(avg_scores[j])/line_count << endl;
-		*costs_out << "Continuous/Fractional costs of inference result" << j << ": total=" << std::get<1>(avg_scores[j]) << " average=" << std::get<1>(avg_scores[j])/line_count << endl;
-		*costs_out << "Discrete costs of inference result " << j << ": total=" << std::get<2>(avg_scores[j]) << " average=" << std::get<2>(avg_scores[j])/line_count << endl;
+	if (verbose) {
+		for (unsigned j = 0; j < refs_in.size(); j++){
+			*costs_out << "Discrete costs of reference" << j << ": total=" << std::get<0>(avg_scores[j]) << " average=" << std::get<0>(avg_scores[j])/line_count << endl;
+			*costs_out << "Continuous/Fractional costs of inference result" << j << ": total=" << std::get<1>(avg_scores[j]) << " average=" << std::get<1>(avg_scores[j])/line_count << endl;
+			*costs_out << "Discrete costs of inference result " << j << ": total=" << std::get<2>(avg_scores[j]) << " average=" << std::get<2>(avg_scores[j])/line_count << endl;
+		}
+	}
+
+	double elapsed = timer_dec.Elapsed();
+	cerr << "Relaxed optimisation decoding is finished!" << endl;
+	cerr << "Decoded " << line_count << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
+	if (timing){
+		cerr << "Decoding time info: " << endl;
+		cerr << "Elapsed Forward=" << dti.elapsed_fwd/1000 << "(s)" << endl;
+		cerr << "Elapsed Backward=" << dti.elapsed_bwd/1000 << "(s)" << endl;
+		cerr << "Elapsed Update=" << dti.elapsed_upd/1000 << "(s)" << endl;
+		cerr << "Elapsed Others=" << dti.elapsed_oth/1000 << "(s)" << endl;
 	}
 
 	//------------------------------------
@@ -355,6 +403,8 @@ int main_body(variables_map vm)
 		delete p_am_r2l; 
 	if (vm.count("initialise_t2s"))
 		delete p_am_t2s; 
+	if (vm.count("initialise_bam"))
+		delete p_bam;
 	
 	//dynet::cleanup();
 	//------------------------------------

@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
 		//-----------------------------------------
 		("minibatch_size", value<unsigned>()->default_value(1), "impose the minibatch size for training (support both GPU and CPU); no by default")
 		//-----------------------------------------
-		("sgd_trainer", value<unsigned>()->default_value(0), "use specific SGD trainer (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam)")
+		("sgd_trainer", value<unsigned>()->default_value(0), "use specific SGD trainer (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam; 5: RMSProp; 6: cyclical SGD)")
 		("sparse_updates", value<bool>()->default_value(true), "enable/disable sparse update(s) for lookup parameter(s); true by default")
 		//-----------------------------------------
 		("initialise,i", value<string>(), "load initial parameters from file")
@@ -350,6 +350,10 @@ int main_body(variables_map vm)
 		sgd = new AdadeltaTrainer(model);
 	else if (sgd_type == 4)
 		sgd = new AdamTrainer(model, vm["lr_eta"].as<float>());
+	else if (sgd_type == 5)
+		sgd = new RMSPropTrainer(model, vm["lr_eta"].as<float>());
+	else if (sgd_type == 6)
+		sgd = new CyclicalSGDTrainer(model, vm["lr_eta"].as<float>()/10, vm["lr_eta"].as<float>(), (float)8 * (float)training.size()/MINIBATCH_SIZE , 0.99994f);// FIXME: these hyperparameters are empirically set. Also see the original paper! 
 	else if (sgd_type == 0)//Vanilla SGD trainer
 		sgd = new SimpleSGDTrainer(model, vm["lr_eta"].as<float>());
 	else
@@ -476,11 +480,14 @@ void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned b
 	edec.SetBeamSize(beam);
 
 	cerr << "Reading test examples from " << test_file << endl;
+
+	Timer timer_dec("completed in");
+
 	ifstream in(test_file);
 	assert(in);
+
 	string line;
-	Sentence last_source;
-	Sentence source;
+	Sentence last_source, source;
 	int last_docid = -1;
 	while (getline(in, line)) {
 		vector<int> num;
@@ -528,7 +535,7 @@ void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned b
 		}
 		cout << endl;
 
-		if (verbose) cerr << "chug " << lno++ << "\r" << flush;
+		if (verbose) cerr << "chug " << lno << "\r" << flush;
 
 		if (doco) {
 			last_source = source;
@@ -536,7 +543,13 @@ void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned b
 		}
 
 		//break;//for debug only
+
+		lno++;
 	}
+
+	double elapsed = timer_dec.Elapsed();
+	cerr << "Decoding is finished!" << endl;
+	cerr << "Decoded " << lno << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 }
 
 template <class AM_t>
@@ -552,7 +565,9 @@ void Test_Decode_Nbest(Model &model
 	edec.SetBeamSize(beam);
 
 	cerr << "Reading test examples from " << test_file << endl;
-
+	
+	Timer timer_dec("completed in");
+	
 	ifstream in(test_file);
 	assert(in);
 
@@ -620,8 +635,14 @@ void Test_Decode_Nbest(Model &model
 		}
 
 		if (verbose)
-			cerr << "chug " << lno++ << "\r" << flush;
+			cerr << "chug " << lno << "\r" << flush;
+
+		lno++;
 	}
+
+	double elapsed = timer_dec.Elapsed();
+	cerr << "Nbest decoding is finished!" << endl;
+	cerr << "Decoded " << lno << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 	
 	return;
 }

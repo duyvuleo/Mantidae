@@ -330,86 +330,113 @@ void AdamTrainer::alloc_impl() {
 }
 #endif
 
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+template <class MyDevice>
+EIGEN_STRONG_INLINE void logsumexp(const MyDevice & dev, const Tensor& x, Tensor & m, Tensor& z) {
+  if(x.d.bd == 1 && x.d[1] == 1) {
+    m.t<0>().device(*dev.edevice) = x.t<1>().maximum();
+#ifdef __CUDACC__
+    Eigen::array<int, 1> bcast;
+    bcast[0] = x.d[0];
+    // This needs to be split into two lines to prevent memory allocation
+    // TODO? Here and in logsoftmax: Is there a better way to subtract a scalar that is already on the GPU without using broadcasting (and without copying the scalar back to the host first)
+    z.t<0>().device(*dev.edevice) = (x.t<1>() - m.t<1>().broadcast(bcast)).exp().sum();
+    z.t<0>().device(*dev.edevice) = z.t<0>().log() + m.t<0>();
+#else
+    float mval = as_scalar(m);
+    // This needs to be split into two lines to prevent memory allocation
+    z.t<0>().device(*dev.edevice) = (x.t<1>() - mval).exp().sum();
+    z.t<0>().device(*dev.edevice) = z.t<0>().log() + mval;
+#endif
+  } else {
+    Eigen::array<int, 1> red_axis; red_axis[0] = 0;
+    m.tb<1>().device(*dev.edevice) = x.tb<2>().maximum(red_axis);
+    // TODO: Currently, the first version is slower on CPU, hence the switch
+#ifdef __CUDACC__
+    Eigen::array<int, 3> bcast({(int)x.d.rows(), 1, 1});
+    Eigen::array<int, 3> morph({1, (int)m.d[0], (int)m.d.bd});
+    // This needs to be split into two lines to prevent memory allocation
+    z.tb<1>().device(*dev.edevice) = (x.tb<2>() - m.tb<2>().reshape(morph).broadcast(bcast)).exp().sum(red_axis);
+    z.tb<1>().device(*dev.edevice) = z.tb<1>().log() + m.tb<1>();
+#else
+    auto miter = m.v;
+    for(size_t b = 0; b < x.d.bd; ++b) {
+      for(size_t i = 0; i < x.d[1]; ++i, ++miter) {
+        z.tb<1>().chip<1>(b).chip<0>(i).device(*dev.edevice) = (x.tb<2>().chip<2>(b).chip<1>(i) - *miter).exp().sum();
+        z.tb<1>().chip<1>(b).chip<0>(i).device(*dev.edevice) = z.tb<1>().chip<1>(b).chip<0>(i).log() + *miter;
+      }
+    }
+#endif
+  }
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+
 // --- AdaptiveEGTrainer
 
 // Perform update of ts[0]=parameters, ts[1]=gradients, ts[2]=accumulated_gradients
 template <class MyDevice>
 void AdaptiveEGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
   // --------------------------
-  // AdaGrad step
-  /*real epsilon = 1e-8;
-  ts[1]->tvec().device(*dev.edevice) = ts[1]->tvec() * (scale * gscale);
-  ts[2]->tvec().device(*dev.edevice) += ts[1]->tvec().square();*/
-  //ts[0]->tvec().device(*dev.edevice) += ts[1]->tvec() / (ts[2]->tvec() + epsilon).sqrt() * (-eta / model->weight_decay.current_weight_decay());
-  // --------------------------
-
-  // --------------------------
   // Adam step
-  float beta_1 = 0.9, beta_2 = 0.999, eps = 1e-8;
   ts[1]->tvec().device(*dev.edevice) = ts[1]->tvec() * (scale * gscale);
   ts[2]->tvec().device(*dev.edevice) = ts[2]->tvec() * beta_1 + ts[1]->tvec() * (1.f - beta_1);
   ts[3]->tvec().device(*dev.edevice) = ts[3]->tvec() * beta_2 + ts[1]->tvec().square() * (1.f - beta_2);
-  float s1 = 1 - pow(beta_1, updates+1);
-  float s2 = 1 - pow(beta_2, updates+1);
-  //ts[0]->tvec().device(*dev.edevice) += ts[2]->tvec() / ((ts[3]->tvec() / s2).sqrt() + epsilon) * (-eta / s1 / model->weight_decay.current_weight_decay());
+  float lr_t = eta * sqrt(1-pow(beta_2, updates+1))/(1-pow(beta_1, updates+1))/ model->weight_decay.current_weight_decay();
+  //ts[0]->tvec().device(*dev.edevice) -= ts[2]->tvec() / (ts[3]->tvec().sqrt() + epsilon) * lr_t;
   // --------------------------
   
-  // --------------------------
-  // For debug only
-  //cerr << "eta=" << eta << "; " << "scale=" << scale << "; " << "gscale=" << gscale << "; " << "weight_decay=" << weight_decay << endl;
+/*
+  //------------------------------------------------------------------
+  // METHOD 1: naive implementation (slow?)
   std::vector<real> v_params = dynet::as_vector(*ts[0]);
   //std::vector<real> v_grads = dynet::as_vector(*ts[1]);
   std::vector<real> v_m1 = dynet::as_vector(*ts[2]);// for adam step
   std::vector<real> v_m2 = dynet::as_vector(*ts[3]);// for adam step
-  //std::vector<real> v_acc_grads = dynet::as_vector(*ts[2]);// for AdaGrad step
-  //cerr << "params[0]=" << v_params[0] << "; params[1]=" << v_params[1] << endl;
-  //cerr << "grads[0]=" << v_grads[0] << "; grads[1]=" << v_grads[1] << endl;
-  //cerr << "EG_v[0]=" << log(v_params[0] / weight_decay) - (eta * scale * gscale) * v_grads[0] << endl;
-  //cerr << "EG_v[1]=" << log(v_params[1] / weight_decay) - (eta * scale * gscale) * v_grads[1] << endl;
-  //cerr << "max(grads)=" << *std::max_element(v_grads.begin(), v_grads.end()) << endl;
 
   Eigen::TensorMap<Eigen::Tensor<real,1>> t_params(&v_params[0], v_params.size());
   //Eigen::TensorMap<Eigen::Tensor<real,1>> t_grads(&v_grads[0], v_grads.size());
   Eigen::TensorMap<Eigen::Tensor<real,1>> t_m1(&v_m1[0], v_m1.size());// for adam step
   Eigen::TensorMap<Eigen::Tensor<real,1>> t_m2(&v_m2[0], v_m2.size());// for adam step
-  //Eigen::TensorMap<Eigen::Tensor<real,1>> t_acc_grads(&v_acc_grads[0], v_acc_grads.size());// for AdaGrad step
-  //Eigen::Tensor<real,1> v = t_params.log() - t_grads * (eta / (t_acc_grads + epsilon).sqrt() / model->weight_decay.current_weight_decay());// for AdaGrad step
-  Eigen::Tensor<real,1> v = t_params.log() - t_m1 / ((t_m2 / s2).sqrt() + eps) * (eta / s1 / model->weight_decay.current_weight_decay());// for adam step
+  Eigen::Tensor<real,1> v = t_params.log() - t_m1 / (t_m2.sqrt() + eps) * lr_t;// for adam step
   
   Eigen::Tensor<float,0> m = v.maximum() ;// max
   Eigen::Tensor<float,0> z = m.coeff() + (v - m.coeff()).exp().sum().log();// Z
   Eigen::Tensor<float,1> u = (v - z.coeff()).exp();// result
-  TensorTools::set_elements(*ts[0], u.data(), u.dimensions()[0]);   
+  TensorTools::set_elements(*ts[0], u.data(), u.dimensions()[0]);
+  //------------------------------------------------------------------   
+*/
+
+  //------------------------------------------------------------------
+  // METHOD 2: advanced implementation (supposedly faster?)
+  ts[0]->tvec().device(*dev.edevice) = ts[0]->tvec().log() - ts[2]->tvec() / (ts[3]->tvec().sqrt() + epsilon) * lr_t;// Adam update
+
+  logsumexp(dev, *ts[0], *ts[4], *ts[5]);// z refers to logZ
+  //cerr << "max_element=" << as_scalar(m) << endl;
+  //cerr << "logZ=" << as_scalar(z) << endl;
+    
+  ts[0]->tvec().device(*dev.edevice) = (ts[0]->tvec() - as_scalar(*ts[5])).exp();// FIXME: other way(s) of not using as_scalar(z)?
+  //------------------------------------------------------------------
 }
 DYNET_TRAINER_INST_DEV_IMPL(AdaptiveEGTrainer)
 
 #ifndef __CUDACC__
 void AdaptiveEGTrainer::update_params(real scale, real gscale, size_t idx) {
   auto & p = model->parameters_list()[idx];
-  //update_rule(scale, gscale, {&p->values, &p->g});
-  //update_rule(scale, gscale, {&p->values, &p->g, &vp[idx].h});
-  update_rule(scale, gscale, {&p->values, &p->g, &m[idx].h, &v[idx].h});
+  update_rule(scale, gscale, {&p->values, &p->g, &m[idx].h, &v[idx].h, &meg, &zeg});
 }
 void AdaptiveEGTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
   auto & p = model->lookup_parameters_list()[idx];
-  //update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx]});
-  //update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &vlp[idx].h[lidx]});
-  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &lm[idx].h[lidx], &lv[idx].h[lidx]});
+  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &lm[idx].h[lidx], &lv[idx].h[lidx], &meg, &zeg});
 }
 void AdaptiveEGTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
   auto & p = model->lookup_parameters_list()[idx];
-  //update_rule(scale, gscale, {&p->all_grads, &p->all_grads});
-  //update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &vlp[idx].all_h});
-  update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &lm[idx].all_h, &lv[idx].all_h});
+  update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &lm[idx].all_h, &lv[idx].all_h, &meg, &zeg});
 }
 void AdaptiveEGTrainer::alloc_impl() {
-  //vp = allocate_shadow_parameters(*model);
-  //vlp = allocate_shadow_lookup_parameters(*model);
   m = allocate_shadow_parameters(*model);
   lm = allocate_shadow_lookup_parameters(*model);
   v = allocate_shadow_parameters(*model);
-  lv = allocate_shadow_lookup_parameters(*model);
-  //v_etas.resize(model->all_parameters_list().size(), eta0);// initial learning rates
+  lv = allocate_shadow_lookup_parameters(*model);  
 }
 #endif
 
@@ -424,42 +451,53 @@ void EGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, c
 
   //------------------------------------------------------------------
   // Add momentum
-  //real dampening = momentum;
   ts[2]->tvec().device(*dev.edevice) = ts[2]->tvec() * momentum - ts[1]->tvec() * (eta * scale * gscale);
-  //ts[0]->tvec().device(*dev.edevice) += ts[2]->tvec() / model->weight_decay.current_weight_decay();
 
+/*
   //------------------------------------------------------------------
+  // METHOD 1: naive implementation (slow?)
   std::vector<real> v_params = dynet::as_vector(*ts[0]);// FIXME: not a smart way but it works on both GPU and CPU!
-  //std::vector<real> v_grads = dynet::as_vector(*ts[1]);
   std::vector<real> v_grads = dynet::as_vector(*ts[2]);// gradients with momentum
   Eigen::TensorMap<Eigen::Tensor<real,1>> t_params(&v_params[0], v_params.size());
   Eigen::TensorMap<Eigen::Tensor<real,1>> t_grads(&v_grads[0], v_grads.size());
-  //Eigen::Tensor<real,1> v = t_params.log() - t_grads * (eta * scale * gscale / model->weight_decay.current_weight_decay());
   Eigen::Tensor<real,1> v = t_params.log() + t_grads / model->weight_decay.current_weight_decay();// with momentum
   
   Eigen::Tensor<float,0> m = v.maximum();// max
   Eigen::Tensor<float,0> z = m.coeff() + (v - m.coeff()).exp().sum().log();// Z
   Eigen::Tensor<float,1> u = (v - z.coeff()).exp();// result
   TensorTools::set_elements(*ts[0], u.data(), u.dimensions()[0]);// for both GPU and CPU
+  //------------------------------------------------------------------
+*/
+
+  //------------------------------------------------------------------
+  // METHOD 2: advanced implementation (supposedly faster?)
+  ts[0]->tvec().device(*dev.edevice) = ts[0]->tvec().log() + ts[2]->tvec() / model->weight_decay.current_weight_decay();// with momentum
+
+  logsumexp(dev, *ts[0], *ts[3], *ts[4]);// z refers to logZ
+  //cerr << "max_element=" << as_scalar(m) << endl;
+  //cerr << "logZ=" << as_scalar(z) << endl;
+    
+  ts[0]->tvec().device(*dev.edevice) = (ts[0]->tvec() - as_scalar(*ts[4])).exp();// FIXME: other way(s) of not using as_scalar(z)?
+  //------------------------------------------------------------------
 }
 DYNET_TRAINER_INST_DEV_IMPL(EGTrainer)
 
 #ifndef __CUDACC__
 void EGTrainer::update_params(real scale, real gscale, size_t idx) {
   auto & p = model->parameters_list()[idx];
-  update_rule(scale, gscale, {&p->values, &p->g, &hp[idx].h});
+  update_rule(scale, gscale, {&p->values, &p->g, &hp[idx].h, &meg, &zeg});
 }
 void EGTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
   auto & p = model->lookup_parameters_list()[idx];
-  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &hlp[idx].h[lidx]});
+  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &hlp[idx].h[lidx], &meg, &zeg});
 }
 void EGTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
   auto & p = model->lookup_parameters_list()[idx];
-  update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &hlp[idx].all_h});
+  update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &hlp[idx].all_h, &meg, &zeg});
 }
 void EGTrainer::alloc_impl() {
   hp = allocate_shadow_parameters(*model);
-  hlp = allocate_shadow_lookup_parameters(*model);
+  hlp = allocate_shadow_lookup_parameters(*model); 
 }
 #endif
 

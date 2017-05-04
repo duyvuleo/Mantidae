@@ -14,7 +14,6 @@
 #include "expr-xtra.h"
 
 #include "relopt-def.h"
-
 #include "dict-utils.h"
 
 #include <algorithm>
@@ -1033,8 +1032,7 @@ template <class Builder>
 void AttentionalModel<Builder>::BuildGraph(const std::vector<int> &source,
 	const std::vector<int>& target, ComputationGraph& cg
 	, std::vector<std::vector<float>>& v_preds, bool with_softmax) 
-{// v_preds does not contain predictions for <s> and </s>.
-	//std::cout << "source sentence length: " << source.size() << " target: " << target.size() << std::endl;
+{// v_preds looks like: p(t0) p(t1) p(t2) ... p(</s>). (excluding p(<s>))
 	StartNewInstance(source, cg, 0);
 
 	v_preds.clear();
@@ -1043,12 +1041,10 @@ void AttentionalModel<Builder>::BuildGraph(const std::vector<int> &source,
 		Expression i_r_t = AddInput(target[t], t, cg);
 		if (with_softmax){// w/ softmax prediction
 			Expression i_softmax = softmax(i_r_t);
-			//if (t != tlen - 1)// excluding EOS prediction
-				v_preds.push_back(as_vector(cg.get_value(i_softmax.i)));
+			v_preds.push_back(as_vector(cg.get_value(i_softmax.i)));
 		}
 		else{// w/o softmax prediction
-			//if (t != tlen - 1)// excluding EOS prediction
-				v_preds.push_back(as_vector(cg.get_value(i_r_t.i)));
+			v_preds.push_back(as_vector(cg.get_value(i_r_t.i)));
 		}
 	}
 }
