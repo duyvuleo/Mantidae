@@ -43,17 +43,17 @@ typedef std::shared_ptr<EnsembleDecoderHyp> EnsembleDecoderHypPtr;
 inline bool operator<(const EnsembleDecoderHypPtr & lhs, const EnsembleDecoderHypPtr & rhs) {
 	if(lhs->GetScore() != rhs->GetScore()) return lhs->GetScore() > rhs->GetScore();
 	return lhs->GetSentence() < rhs->GetSentence();
+	//float score_l = lhs->GetScore()/lhs->GetSentence().size(), score_r = rhs->GetScore()/rhs->GetSentence().size();//score with word-based length normalization
+	//if( score_l != score_r) return score_l > score_r;
+	//return lhs->GetSentence() < rhs->GetSentence();//shorter is better!
 }
 
 template <class AM_t>
 class EnsembleDecoder {
 
 public:
-	EnsembleDecoder(const std::vector<AM_t*> ams, dynet::Dict* td);
+	EnsembleDecoder(const std::vector<std::shared_ptr<AM_t>>& ams, dynet::Dict* td);
 	~EnsembleDecoder() {}
-
-	template <class OutSent, class OutLL, class OutWords>
-	void CalcSentLL(const Sentence & sent_src, const OutSent & sent_trg, OutLL & ll, OutWords & words);
 
 	EnsembleDecoderHypPtr Generate(const Sentence & sent_src, dynet::ComputationGraph& cg);
 	std::vector<EnsembleDecoderHypPtr> GenerateNbest(const Sentence & sent_src, size_t nbest, dynet::ComputationGraph& cg);
@@ -75,7 +75,7 @@ public:
 	void SetSizeLimit(int size_limit) { size_limit_ = size_limit; }
 
 protected:
-	std::vector<AM_t*> ams_;
+	std::vector<std::shared_ptr<AM_t>> ams_;
 	dynet::Dict* ptd_;
 	float word_pen_;
 	float unk_pen_, unk_log_prob_;
@@ -87,7 +87,7 @@ protected:
 };
 
 template <class AM_t>
-EnsembleDecoder<AM_t>::EnsembleDecoder(const std::vector<AM_t*> ams, dynet::Dict* td)
+EnsembleDecoder<AM_t>::EnsembleDecoder(const std::vector<std::shared_ptr<AM_t>>& ams, dynet::Dict* td)
 	: word_pen_(0.f), unk_pen_(0.f), size_limit_(2000), beam_size_(1), ensemble_operation_("sum"), verbose_(false) 
 {
 	if(ams.size() == 0)
@@ -146,6 +146,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 	WordId eos_sym = ptd_->convert("</s>");
   
 	// Initialize the computation graph including source embedding(s)
+	//cerr << "GenerateNbest::(1)" << endl;
 	for(auto & am : ams_)
 		am->StartNewInstance(sent_src, cg, nullptr);
 
@@ -170,6 +171,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 		vector<tuple<dynet::real,int,int,int> > next_beam_id(beam_size_+1, tuple<dynet::real,int,int,int>(-DBL_MAX,-1,-1,-1));
 
 		// Go through all the hypothesis IDs
+		//cerr << "GenerateNbest::(2)" << endl;
 		//cerr << "l=" << sent_len << " - " << "(1) ";
 		for(int hypid = 0; hypid < (int)curr_beam.size(); hypid++) {
 			EnsembleDecoderHypPtr curr_hyp = curr_beam[hypid];
@@ -178,7 +180,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 			if(sent_len != 0 && *sent.rbegin() == eos_sym) continue;
 
 			// Perform the forward step on all models
-			//cerr << "(a,Forward) ";
+			//cerr << "GenerateNbest::(2)::(a,Forward) ";
 			vector<Expression> i_softmaxes, i_aligns;
 			for(int j : boost::irange(0, (int)ams_.size())){
 				//if (verbose_) cerr << "Forward(); state=" << curr_hyp->GetState() << endl;
@@ -192,7 +194,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 			}
 
 			// Ensemble and calculate the likelihood
-			//cerr << "(b,Ensemble) ";
+			//cerr << "GenerateNbest::(2)::(b,Ensemble) ";
 			Expression i_softmax, i_logprob;
 			if(ensemble_operation_ == "sum") {
 				i_softmax = EnsembleProbs(i_softmaxes, cg);
@@ -205,7 +207,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 				assert(string("Bad ensembling operation: " + ensemble_operation_).c_str());
 
 			// Get the (log) softmax predictions
-			//cerr << "(c,softmax) ";
+			//cerr << "GenerateNbest::(2)::(c,softmax) ";
 			vector<dynet::real> softmax = as_vector(cg.incremental_forward(i_logprob));
 
 			// Add the word/unk penalty
@@ -219,7 +221,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 			if(unk_id_ >= 0) softmax[unk_id_] += unk_pen_ * unk_log_prob_;
 
 			// Find the best aligned source, if any alignments exists
-			//cerr << "(d,Align) ";
+			//cerr << "GenerateNbest::(2)::(d,Align) ";
 			WordId best_align = -1;
 			if(i_aligns.size() != 0) {
 				dynet::expr::Expression ens_align = sum(i_aligns);
@@ -231,7 +233,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 			}
 
 			// Find the best IDs in the beam
-			//cerr << "(e,ID) ";
+			//cerr << "GenerateNbest::(2)::(e,ID) ";
 			for(int wid = 0; wid < (int)softmax.size(); wid++) {
 				dynet::real my_score = curr_hyp->GetScore() + softmax[wid];
 				for (bid = beam_size_; bid > 0 && my_score > std::get<0>(next_beam_id[bid-1]); bid--)
@@ -241,7 +243,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 		}
 
 		// Create the new hypotheses
-		//cerr << endl << "(2) " << endl;
+		//cerr << endl << "GenerateNbest::(3) " << endl;
 		vector<EnsembleDecoderHypPtr> next_beam;
 		for(int i = 0; i < beam_size_; i++) {
 			dynet::real score = std::get<0>(next_beam_id[i]);
@@ -276,7 +278,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 		//	cerr << "Current beam size=" << curr_beam.size() << endl;
 
 		// Check if we're done with search
-		//cerr << "(3) " << endl;
+		//cerr << "GenerateNbest::(4) " << endl;
 		if(nbest.size() != 0) {
 			sort(nbest.begin(), nbest.end());
 

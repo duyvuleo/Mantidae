@@ -18,7 +18,8 @@ std::vector<std::string> SplitWords(const std::string & str);
 Sentence ParseWords(Dict & dict, const std::string & str, bool sent_end);
 std::string PrintWords(Dict & dict, const Sentence & sent);
 std::string PrintWords(const std::vector<std::string> & sent);
-std::vector<std::string> ConvertWords(Dict & sd, const Sentence & sent, bool smarker = true);
+std::vector<std::string> Convert2iStr(Dict & sd, const Sentence & sent, bool smarker = true);
+std::string Convert2Str(Dict & sd, const Sentence & sent, bool smarker = true);
 
 vector<string> SplitWords(const std::string & line) {
 	std::istringstream in(line);
@@ -67,7 +68,7 @@ std::string PrintWords(const std::vector<std::string> & sent) {
 	return oss.str();
 }
 
-vector<string> ConvertWords(Dict & sd, const Sentence & sent, bool smarker) {
+vector<string> Convert2iStr(Dict & sd, const Sentence & sent, bool smarker) {
 	vector<string> ret;
 	WordId wid_bos = sd.convert("<s>");
 	WordId wid_eos = sd.convert("</s>");
@@ -76,6 +77,17 @@ vector<string> ConvertWords(Dict & sd, const Sentence & sent, bool smarker) {
 			ret.push_back(sd.convert(wid));
 	}
 	return ret;
+}
+
+string Convert2Str(Dict & sd, const Sentence & sent, bool smarker) {
+	stringstream ss;
+	WordId wid_bos = sd.convert("<s>");
+	WordId wid_eos = sd.convert("</s>");
+	for(WordId wid : sent) {
+		if (smarker || (wid != wid_bos && wid != wid_eos))
+			ss << sd.convert(wid) << " ";
+	}
+	return ss.str();
 }
 
 }

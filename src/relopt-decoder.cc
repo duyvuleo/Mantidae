@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
 		("swap", "swap roles of source and target, i.e., learn p(source|target)")
 		//-----------------------------------------		
 		("relopt_algo", value<unsigned>()->default_value(RELOPT_ALGO::EG), "The algorithm (1:EG; 2:AdaptiveEG 3:SOFTMAX; 5:SPARSEMAX) for relaxed optimization")
+		("relopt_aeg_opt", value<unsigned>()->default_value(0), "The algorithm option for AEG (0: Adam; 1: RMSProp; default Adam")
 		("relopt_init", value<unsigned>()->default_value(RELOPT_INIT::UNIFORM), "The initialization method (0:UNIFORM; 1:REFERENCE_PROBABILITY; 2:REFERENCE_ONE_HOT) for relaxed optimization")
 		("relopt_eta", value<float>()->default_value(1.f), "The learning rate for relaxed optimization")
 		("relopt_eta_decay", value<float>()->default_value(2.f), "The learning rate decay for relaxed optimization")
@@ -83,13 +84,17 @@ int main(int argc, char** argv) {
 		("relopt_clr_ub_eta", value<float>()->default_value(0.f), "the uppper bound of eta for EG with cyclical learning rate")
 		("relopt_clr_stepsize", value<float>()->default_value(0.f), "the stepsize for EG with cyclical learning rate")
 		("relopt_clr_gamma", value<float>()->default_value(0.f), "the gamma for EG with cyclical learning rate")
-		("relopt_adam_beta_1", value<float>()->default_value(0.9f), "the beta_1 hyperparameter of Adam-based EG")
-		("relopt_adam_beta_2", value<float>()->default_value(0.999f), "the beta_2 hyperparameter of Adam-based EG")
-		("relopt_adam_eps", value<float>()->default_value(1e-8), "the epsion hyperparameter of Adam-based EG")
+		("relopt_aeg_beta_1", value<float>()->default_value(0.9f), "the beta_1 hyperparameter of adaptive EG")
+		("relopt_aeg_beta_2", value<float>()->default_value(0.999f), "the beta_2 hyperparameter of adaptive EG")
+		("relopt_aeg_eps", value<float>()->default_value(1e-8), "the epsion hyperparameter of Adam-based EG")
 		("relopt_ent_gamma", value<float>()->default_value(1.f), "The hyper-parameter for weighting the entropy regularizer of SOFTMAX or SPARSEMAX")
+		("relopt_noise_eta", value<float>()->default_value(0.f), "The hyper-parameter for injecting the noise during gradient update")
+		("relopt_noise_gamma", value<float>()->default_value(0.55f), "The hyper-parameter for injecting the noise during gradient update")
+		("relopt_sgld", value<unsigned>()->default_value(0), "impose the use of SGLD methods (1: SGLD; 2: pSGLD); none by default")
 		("relopt_add_extra_words", value<unsigned>()->default_value(0), "No. of extra words added")
 		("src_in", value<string>()->default_value(""), "File to read the source from")
 		("ref_in", value<string>()->default_value(""), "File to read the reference from")
+		("ref_nbest", "ref_in is a K-best translation list ")
 		("trg_out", value<string>()->default_value(""), "File to write the output files")
 		("cline", value<unsigned>()->default_value(0), "line number to be continued for processing (used in a crashed running)")
 		//-----------------------------------------		
@@ -103,6 +108,8 @@ int main(int argc, char** argv) {
 		store(parse_config_file(config, opts), vm); 
 	}
 	notify(vm);
+
+	cerr << "PID=" << ::getpid() << endl;
 	
 	if (vm.count("help") || vm.count("train") != 1 || vm.count("ref_in") != 1 || vm.count("src_in") != 1) {
 		cout << opts << "\n";
@@ -126,6 +133,7 @@ void Initialise(Model &model, const string &filename);
 Corpus Read_Corpus(const string &filename, bool doco);
 std::vector<int> Read_Numbered_Sentence(const std::string& line, Dict* sd, std::vector<int> &ids);
 void Read_Numbered_Sentence_Pair(const std::string& line, std::vector<int>* s, Dict* sd, std::vector<int>* t, Dict* td, std::vector<int> &ids);
+void Read_KBest(const string &line, std::vector<string>& segs);
 
 template <class rnn_t>
 int main_body(variables_map vm)
@@ -277,9 +285,13 @@ int main_body(variables_map vm)
 	relopt_cf.clr_ub_eta = vm["relopt_clr_ub_eta"].as<float>();
 	relopt_cf.clr_stepsize = vm["relopt_clr_stepsize"].as<float>();
 	relopt_cf.clr_gamma = vm["relopt_clr_gamma"].as<float>();
-	relopt_cf.adam_beta_1 = vm["relopt_adam_beta_1"].as<float>();
-	relopt_cf.adam_beta_2 = vm["relopt_adam_beta_2"].as<float>();
-	relopt_cf.adam_eps = vm["relopt_adam_eps"].as<float>();
+	relopt_cf.aeg_beta_1 = vm["relopt_aeg_beta_1"].as<float>();
+	relopt_cf.aeg_beta_2 = vm["relopt_aeg_beta_2"].as<float>();
+	relopt_cf.aeg_eps = vm["relopt_aeg_eps"].as<float>();
+	relopt_cf.aeg_opt = vm["relopt_aeg_opt"].as<unsigned>();
+	relopt_cf.noise_eta = vm["relopt_noise_eta"].as<float>();
+	relopt_cf.noise_gamma = vm["relopt_noise_gamma"].as<float>();
+	relopt_cf.sgld = vm["relopt_sgld"].as<unsigned>();
 
 	// Read in the model file
 	cerr << "Loading model(s)...";
@@ -306,95 +318,135 @@ int main_body(variables_map vm)
 		assert("Could not find trg_out files ");// << vm["trg_out"].as<std::string>());
 
 	// Get the references (e.g., greedy Viterbi, beam search, (human) reference)
-	std::vector<std::string> strs;
-	boost::split(strs, vm["ref_in"].as<std::string>(), boost::is_any_of("|"));
-	std::vector<shared_ptr<ifstream>> refs_in(strs.size());
-	for (auto i : boost::irange(0, (int)strs.size())){
-		refs_in[i].reset(new ifstream(strs[i]));
-		if(!*refs_in[i])
-		assert("Could not find ref_in file(s) ");// << strs[i]);
-	}
-
-	std::string line_src;
-	std::vector<std::string> lines_ref(refs_in.size());
-	vector<tuple<float,float,float>> avg_scores(refs_in.size(), make_tuple(0.f, 0.f, 0.f));
-	unsigned line_count = 0, line_continued = vm["cline"].as<unsigned>();
-	Timer timer_dec("completed in");
-	DecTimeInfo dti;
-	while (getline(*src_in, line_src)){
-		if ("" == line_src) break;
-
-		for (auto i : boost::irange(0, (int)refs_in.size())){
-			getline(*refs_in[i], lines_ref[i]);
-			if ("" == lines_ref[i]) break;
+	if (!vm.count("ref_nbest")){
+		std::vector<std::string> strs;
+		boost::split(strs, vm["ref_in"].as<std::string>(), boost::is_any_of("|"));
+		std::vector<shared_ptr<ifstream>> refs_in(strs.size());
+		for (auto i : boost::irange(0, (int)strs.size())){
+			refs_in[i].reset(new ifstream(strs[i]));
+			if(!*refs_in[i])
+			assert("Could not find ref_in file(s) ");// << strs[i]);
 		}
 
-		// for continuing a crashed/stopped run
-		if (line_continued > 0 && line_count < line_continued){ 
-			line_count++;
-			continue;
-		}
+		std::string line_src;
+		std::vector<std::string> lines_ref(refs_in.size());
+		vector<tuple<float,float,float>> avg_scores(refs_in.size(), make_tuple(0.f, 0.f, 0.f));
+		unsigned line_count = 0, line_continued = vm["cline"].as<unsigned>();
+		Timer timer_dec("completed in");
+		DecTimeInfo dti;
+		while (getline(*src_in, line_src)){
+			if ("" == line_src) break;
 
-		cerr << "Processing line " << line_count << "..." << endl;
-		if (verbose) cerr << "Decoding sentence: " << line_src << endl;
-		unsigned j = 0;		
-		for (auto& ref : lines_ref){
-			float gcost_ref = 0.f, gcost_inf = 0.f;
+			for (auto i : boost::irange(0, (int)refs_in.size())){
+				getline(*refs_in[i], lines_ref[i]);
+				if ("" == lines_ref[i]) break;
+			}
 
-			if (verbose){
-				cerr << "--------------------" << endl;
+			// for continuing a crashed/stopped run
+			if (line_continued > 0 && line_count < line_continued){ 
+				line_count++;
+				continue;
+			}
+
+			cerr << "Processing line " << line_count << "..." << endl;
+			if (verbose) cerr << "Decoding sentence: " << line_src << endl;
+			unsigned j = 0;		
+			for (auto& ref : lines_ref){
+				float gcost_ref = 0.f, gcost_inf = 0.f;
+
+				if (verbose){
+					cerr << "--------------------" << endl;
 			
-				gcost_ref = relopt_decoder.GetNLLCost(line_src, ref);
-				cerr << "Referencing from: " << ref << " (discrete cost=" << gcost_ref << ")" << endl;
+					gcost_ref = relopt_decoder.GetNLLCost(line_src, ref);
+					cerr << "Referencing from: " << ref << " (discrete cost=" << gcost_ref << ")" << endl;
+				}
+
+				RelOptOutput ir;
+				if (!timing)
+					ir = relopt_decoder.GDDecode(line_src, ref, relopt_cf);
+				else ir = relopt_decoder.GDDecode(line_src, ref, relopt_cf, dti);// with timing benchmarking
+
+				*trg_out << ir.decoded_sent << endl;// write to output(s)
+				if (verbose){
+					gcost_inf = relopt_decoder.GetNLLCost(line_src, "<s> " + ir.decoded_sent + " </s>");
+
+					cerr << "Inference result: " << ir.decoded_sent << endl;
+
+					std::get<0>(avg_scores[j]) += gcost_ref;// discrete cost of reference
+					std::get<1>(avg_scores[j]) += ir.cost;// fractional/continuous cost of inference result
+					std::get<2>(avg_scores[j]) += gcost_inf;// discrete cost of inference result
+
+					cerr << "Reference's discrete cost=" << gcost_ref << endl;
+					cerr << "Inference result's continuous cost=" << ir.cost << endl;
+					cerr << "Inference result's discrete cost=" << gcost_inf << endl;
+				}
+
+				j++;
 			}
 
-			RelOptOutput ir;
-			if (!timing)
-				ir = relopt_decoder.GDDecode(line_src, ref, relopt_cf);
-			else ir = relopt_decoder.GDDecode(line_src, ref, relopt_cf, dti);// with timing benchmarking
+			cerr << endl;
 
+			line_count++;
+
+			//if (line_count == 100) break;// for debug only
+		}
+
+		if (verbose) {
+			for (unsigned j = 0; j < refs_in.size(); j++){
+				*costs_out << "Discrete costs of reference" << j << ": total=" << std::get<0>(avg_scores[j]) << " average=" << std::get<0>(avg_scores[j])/line_count << endl;
+				*costs_out << "Continuous/Fractional costs of inference result" << j << ": total=" << std::get<1>(avg_scores[j]) << " average=" << std::get<1>(avg_scores[j])/line_count << endl;
+				*costs_out << "Discrete costs of inference result " << j << ": total=" << std::get<2>(avg_scores[j]) << " average=" << std::get<2>(avg_scores[j])/line_count << endl;
+			}
+		}
+
+		double elapsed = timer_dec.Elapsed();
+		cerr << "Relaxed optimisation decoding is finished!" << endl;
+		cerr << "Decoded " << line_count << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
+		if (timing){
+			cerr << "Decoding time info: " << endl;
+			cerr << "Elapsed Forward=" << dti.elapsed_fwd/1000 << "(s)" << endl;
+			cerr << "Elapsed Backward=" << dti.elapsed_bwd/1000 << "(s)" << endl;
+			cerr << "Elapsed Update=" << dti.elapsed_upd/1000 << "(s)" << endl;
+			cerr << "Elapsed Others=" << dti.elapsed_oth/1000 << "(s)" << endl;
+		}
+	}
+	else{
+		shared_ptr<ifstream> ref_in;
+		ref_in.reset(new ifstream(vm["ref_in"].as<std::string>()));
+		if(!*ref_in)
+			assert("Could not find ref_in file ");
+
+		Timer timer_dec("completed in");
+		std::string line_src, line_ref;
+		unsigned line_count = 0, line_continued = vm["cline"].as<unsigned>();
+		while (getline(*src_in, line_src) && getline(*ref_in, line_ref)){
+			if ("" == line_src || "" == line_ref) continue;
+
+			// for continuing a crashed/stopped run
+			if (line_continued > 0 && line_count < line_continued){ 
+				line_count++;
+				continue;
+			}
+
+			cerr << "Processing line " << line_count << "..." << endl;
+			if (verbose) cerr << "Decoding sentence: " << line_src << endl;
+
+			// parse K-best line
+			std::vector<std::string> v_kbests;
+			Read_KBest(line_ref, v_kbests);
+
+			// decode with relaxed optimization for Nbest
+			RelOptOutput ir = relopt_decoder.GDDecodeNBest(line_src, v_kbests, relopt_cf);
 			*trg_out << ir.decoded_sent << endl;// write to output(s)
-			if (verbose){
-				gcost_inf = relopt_decoder.GetNLLCost(line_src, "<s> " + ir.decoded_sent + " </s>");
 
-				cerr << "Inference result: " << ir.decoded_sent << endl;
+			line_count++;
 
-				std::get<0>(avg_scores[j]) += gcost_ref;// discrete cost of reference
-				std::get<1>(avg_scores[j]) += ir.cost;// fractional/continuous cost of inference result
-				std::get<2>(avg_scores[j]) += gcost_inf;// discrete cost of inference result
-
-				cerr << "Reference's discrete cost=" << gcost_ref << endl;
-				cerr << "Inference result's continuous cost=" << ir.cost << endl;
-				cerr << "Inference result's discrete cost=" << gcost_inf << endl;
-			}
-
-			j++;
+			cerr << endl;
 		}
 
-		cerr << endl;
-
-		line_count++;
-
-		//if (line_count == 100) break;// for debug only
-	}
-
-	if (verbose) {
-		for (unsigned j = 0; j < refs_in.size(); j++){
-			*costs_out << "Discrete costs of reference" << j << ": total=" << std::get<0>(avg_scores[j]) << " average=" << std::get<0>(avg_scores[j])/line_count << endl;
-			*costs_out << "Continuous/Fractional costs of inference result" << j << ": total=" << std::get<1>(avg_scores[j]) << " average=" << std::get<1>(avg_scores[j])/line_count << endl;
-			*costs_out << "Discrete costs of inference result " << j << ": total=" << std::get<2>(avg_scores[j]) << " average=" << std::get<2>(avg_scores[j])/line_count << endl;
-		}
-	}
-
-	double elapsed = timer_dec.Elapsed();
-	cerr << "Relaxed optimisation decoding is finished!" << endl;
-	cerr << "Decoded " << line_count << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
-	if (timing){
-		cerr << "Decoding time info: " << endl;
-		cerr << "Elapsed Forward=" << dti.elapsed_fwd/1000 << "(s)" << endl;
-		cerr << "Elapsed Backward=" << dti.elapsed_bwd/1000 << "(s)" << endl;
-		cerr << "Elapsed Update=" << dti.elapsed_upd/1000 << "(s)" << endl;
-		cerr << "Elapsed Others=" << dti.elapsed_oth/1000 << "(s)" << endl;
+		double elapsed = timer_dec.Elapsed();
+		cerr << "Relaxed optimisation decoding is finished!" << endl;
+		cerr << "Decoded " << line_count << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 	}
 
 	//------------------------------------
@@ -487,6 +539,31 @@ void Read_Numbered_Sentence_Pair(const std::string& line, std::vector<int>* s, D
 		if (word == sep) { d = td; v = t; continue; }
 		v->push_back(d->convert(word));
 	}
+}
+
+bool CompareString(const string& s1, const string& s2) {
+	return std::count(s1.begin(), s1.end(), ' ') > std::count(s2.begin(), s2.end(), ' ');
+}
+void Read_KBest(const string &line, std::vector<string>& segs)
+{	
+	std::istringstream in(line);
+	std::string word;
+	std::string sep = "|||", seg = "";
+	while(in) {
+		in >> word;
+
+		if (!in) break;
+
+		if (word == sep) {
+			segs.push_back(seg); 
+			seg = "";
+			continue; 
+		}
+
+		seg += word + " ";
+	}
+
+	//std::sort(segs.begin(), segs.end(), CompareString);
 }
 
 void Initialise(Model &model, const string &filename)

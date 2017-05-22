@@ -328,7 +328,6 @@ public:
 		i_R = parameter(cg, p_R_);
 		i_bias = parameter(cg, p_bias_);
 	
-		// Initialize variables for batch errors
 		vector<Expression> errs;
 		
 		// Run rnn on batch
@@ -346,7 +345,49 @@ public:
 			// Project to the token space using an affine transform
 			Expression i_r_t = i_bias + i_R * i_y_t;
 		 
-			// Compute error for each member of the batch
+			// Compute error
+			Expression i_err = pickneglogsoftmax(i_r_t, rsent[t + 1]);
+		  
+			errs.push_back(i_err);
+		}
+	
+		// Add all errors
+		Expression i_nerr = sum(errs);
+		return i_nerr;
+	}
+
+	Expression ComputeNLL(const vector<int>& sent,
+		ComputationGraph& cg) 
+	{
+		const unsigned slen = sent.size();
+		std::vector<int> rsent = sent;
+		if (reverse_ == true) std::reverse(rsent.begin() + 1/*BOS*/, rsent.end() - 1/*EOS*/);;
+	
+		// Initialize the RNN for a new computation graph
+		rnn_->new_graph(cg);
+	
+		// Prepare for new sequence (essentially set hidden states to 0)
+		rnn_->start_new_sequence();
+	
+		// Instantiate embedding parameters in the computation graph
+		// output -> word rep parameters (matrix + bias)
+		i_R = parameter(cg, p_R_);
+		i_bias = parameter(cg, p_bias_);
+	
+		vector<Expression> errs;
+		
+		// Run rnn on batch
+		for (unsigned t = 0; t < slen - 1; ++t) {	
+			// Embed the current tokens
+			Expression i_x_t = lookup(cg, p_c_, rsent[t]);
+		 
+			// Run one step of the rnn : y_t = RNN(x_t)
+			Expression i_y_t = rnn_->add_input(i_x_t);
+	
+			// Project to the token space using an affine transform
+			Expression i_r_t = i_bias + i_R * i_y_t;
+		 
+			// Compute error 
 			Expression i_err = pickneglogsoftmax(i_r_t, rsent[t + 1]);
 		  
 			errs.push_back(i_err);

@@ -296,12 +296,16 @@ int main_body(variables_map vm)
 
 		int lno = 0;
 
-		std::vector<AttentionalModel<rnn_t>*> v_ams;
-		AttentionalModel<rnn_t>* pam = nullptr;
+		//std::vector<AttentionalModel<rnn_t>*> v_ams;
+		std::vector<std::shared_ptr<AttentionalModel<rnn_t>>> v_ams;
+		//AttentionalModel<rnn_t>* pam = nullptr;
+		std::shared_ptr<AttentionalModel<rnn_t>> pam(nullptr);
 		if (vm["dir"].as<bool>() == true)
-			pam = &bam.s2t_model;
+			//pam = &bam.s2t_model;
+			v_ams.push_back(std::make_shared<AttentionalModel<rnn_t>>(bam.s2t_model));//FIXME: single decoder for now
 		else{
-			pam = &bam.t2s_model;
+			//pam = &bam.t2s_model;
+			v_ams.push_back(std::make_shared<AttentionalModel<rnn_t>>(bam.t2s_model));//FIXME: single decoder for now
 
 			//swapping
 			std::swap(sd, td);
@@ -310,7 +314,7 @@ int main_body(variables_map vm)
 			std::swap(kSRC_UNK, kTGT_UNK);
 			std::swap(SRC_VOCAB_SIZE, TGT_VOCAB_SIZE);
 		}
-		v_ams.push_back(pam);//FIXME: single decoder for now
+		//v_ams.push_back(pam);//FIXME: single decoder for now
 
 		unsigned beam = vm["beam"].as<unsigned>();
 

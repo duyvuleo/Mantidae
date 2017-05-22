@@ -88,6 +88,10 @@ struct AttentionalModel {
 		, std::vector<dynet::Parameter>& v_params
 		, Dict &sd /*source vocabulary*/
 		, ComputationGraph &cg);
+	void StartNewInstance(size_t algo
+		, std::vector<std::vector<dynet::Parameter>>& v_params
+		, Dict &sd /*source vocabulary*/
+		, ComputationGraph &cg);
 	Expression AddInput(const Expression& i_ewe_t
 		, int t
 		, ComputationGraph &cg
@@ -106,6 +110,16 @@ struct AttentionalModel {
 		, Expression *alignment=0 /*soft alignment*/
 		, Expression *coverage=0, float coverage_C=1.f /*coverage penalty*/
 		, Expression *fertility=0/*global fertility model*/);
+	Expression BuildRelOptGraph(
+		size_t algo
+		, std::vector<std::vector<dynet::Parameter>>& v_params /*target*/
+		, dynet::ComputationGraph & cg
+		, Dict &d
+		, bool reverse = false
+		, Expression *entropy=0 /*entropy regularization*/
+		, Expression *alignment=0 /*soft alignment*/
+		, Expression *coverage=0, float coverage_C=1.f /*coverage penalty*/
+		, Expression *fertility=0/*global fertility model*/);
 	Expression BuildRevRelOptGraph(
 		size_t algo
 		, std::vector<dynet::Parameter>& v_params /*source*/
@@ -113,8 +127,17 @@ struct AttentionalModel {
 		, dynet::ComputationGraph & cg
 		, Dict &sd
 		, Expression *alignment=0);
+	Expression BuildRevRelOptGraph(
+		size_t algo
+		, std::vector<std::vector<dynet::Parameter>>& v_params /*source*/
+		, const std::vector<int>& target
+		, dynet::ComputationGraph & cg
+		, Dict &sd
+		, Expression *alignment=0);
 	std::string GetRelOptOutput(dynet::ComputationGraph& cg
-			 , const std::vector<dynet::Parameter>& v_relopt_params, size_t algo, Dict &d, bool verbose=false);
+		 , const std::vector<dynet::Parameter>& v_relopt_params, size_t algo, Dict &d, bool verbose=false);
+	std::string GetRelOptOutput(unsigned strategy, dynet::ComputationGraph& cg, const Sentence& i_src_sent
+		, const std::vector<std::vector<dynet::Parameter>>& v_relopt_params, size_t algo, Dict &d, bool verbose);
 	Expression i_We;// word embedding matrix
 	//---------------------------------------------------------------------------------------------
 
@@ -166,7 +189,7 @@ struct AttentionalModel {
 	Builder builder;
 	Builder builder_src_fwd;
 	Builder builder_src_bwd;
-	
+
 	bool rnn_src_embeddings;
 	
 	bool giza_positional;
@@ -245,7 +268,7 @@ AttentionalModel<Builder>::AttentionalModel(dynet::Model* model,
 		, tgt_vocab_size(_tgt_vocab_size)
 		, num_aux_vecs(0)
 {
-	//std::cerr << "Attentionalmodel(" << src_vocab_size  << " " <<  _tgt_vocab_size  << " " <<  slayers << " " << tlayers << " " <<  hidden_dim << " " <<  align_dim  << " " <<  _rnn_src_embeddings  << " " <<  _giza_extentions  << " " <<  _doc_context << ")\n";
+	//std::cerr << "Attentionalmodel(" << _src_vocab_size  << " " <<  _tgt_vocab_size  << " " <<  slayers << " " << tlayers << " " <<  hidden_dim << " " <<  align_dim  << " " <<  _rnn_src_embeddings  << " " <<  _giza_positional << ":" << _giza_markov << ":" << _giza_fertility << ":" << _global_fertility << " " <<  _doc_context << ")\n";
 	
 	p_cs = (_p_cs==nullptr)?model->add_lookup_parameters(src_vocab_size, {hidden_dim}):*_p_cs;
 	p_ct = (_p_ct==nullptr)?model->add_lookup_parameters(tgt_vocab_size, {hidden_dim}):*_p_ct; 
@@ -356,6 +379,7 @@ std::vector<float>* AttentionalModel<Builder>::auxiliary_vector()
 template <class Builder>
 void AttentionalModel<Builder>::StartNewInstance(const std::vector<int> &source, ComputationGraph &cg, const std::vector<int> *ctx)
 {
+	//cerr << "StartNewInstance::(1)" << endl;
 	slen = source.size(); 
 	std::vector<Expression> source_embeddings;
 	if (!rnn_src_embeddings) {
@@ -387,6 +411,7 @@ void AttentionalModel<Builder>::StartNewInstance(const std::vector<int> &source,
 	src = concatenate_cols(source_embeddings); 
 
 	// now for the target sentence
+	//cerr << "StartNewInstance::(2)" << endl;
 	i_R = parameter(cg, p_R); // hidden -> word rep parameter
 	i_Q = parameter(cg, p_Q);
 	i_P = parameter(cg, p_P);
@@ -398,6 +423,8 @@ void AttentionalModel<Builder>::StartNewInstance(const std::vector<int> &source,
 
 	// reset aux_vecs counter, allowing the memory to be reused
 	num_aux_vecs = 0;
+
+	//cerr << "StartNewInstance::(3)" << endl;
 
 	if (giza_fertility || giza_markov || giza_positional) {
 	i_Ta = parameter(cg, p_Ta);   
@@ -463,6 +490,7 @@ void AttentionalModel<Builder>::StartNewInstance(const std::vector<int> &source,
 	std::vector<Expression> source_embeddings;
 	if (!rnn_src_embeddings) {
 		for (unsigned s = 0; s < slen; ++s){
+			tstats.words_src++; 	
 			if (source[s] == kSRC_UNK) tstats.words_src_unk++;
 			source_embeddings.push_back(lookup(cg, p_cs, source[s]));
 		}
@@ -475,6 +503,7 @@ void AttentionalModel<Builder>::StartNewInstance(const std::vector<int> &source,
 		builder_src_fwd.new_graph(cg);
 		builder_src_fwd.start_new_sequence();
 		for (unsigned i = 0; i < slen; ++i){ 
+			tstats.words_src++; 
 			if (source[i] == kSRC_UNK) tstats.words_src_unk++;		
 			src_fwd[i] = builder_src_fwd.add_input(lookup(cg, p_cs, source[i]));
 		}
@@ -1265,21 +1294,21 @@ Expression AttentionalModel<Builder>::BuildRelOptGraph(
 				assert("Unknown inference algo!");
 			
 			//i_cost = -log(transpose(i_y) * i_softmax);
-			i_cost = -transpose(i_y) * log(i_softmax);//FIXME: use log_softmax(i_r_t) instead
+			i_cost = -transpose(i_y) * log(i_softmax);//FIXME: use log_softmax(i_r_t) instead, faster?
 
-			// FIXME: add entropy regularizer to SOFTMAX or SPARSEMAX cost function
-			if (algo == RELOPT_ALGO::SOFTMAX || algo == RELOPT_ALGO::SPARSEMAX){
-				Expression i_entropy = -transpose(i_y) * log(i_y);
-				v_ents.push_back(i_entropy);
-			}
+			// add entropy regularizer to SOFTMAX or SPARSEMAX cost function
+			//if (algo == RELOPT_ALGO::SOFTMAX || algo == RELOPT_ALGO::SPARSEMAX){
+			//	Expression i_entropy = -transpose(i_y) * log(i_y);
+			//	v_ents.push_back(i_entropy);
+			//}
 		}
 		
 		v_costs.push_back(i_cost);
 	}
 
-	if (entropy != 0 && v_ents.size() > 0){
-		*entropy = sum(v_ents);
-	}
+	//if (entropy != 0 && v_ents.size() > 0){
+	//	*entropy = sum(v_ents);
+	//}
 
 	// save the alignment for later
 	if (alignment != 0) {
@@ -1346,36 +1375,308 @@ Expression AttentionalModel<Builder>::BuildRelOptGraph(
 }
 
 template <class Builder>
+Expression AttentionalModel<Builder>::BuildRelOptGraph(
+	size_t algo
+	, std::vector<std::vector<dynet::Parameter>>& v_params
+	, dynet::ComputationGraph & cg
+	, Dict &d
+	, bool reverse
+	, Expression *entropy
+	, Expression *alignment
+	, Expression *coverage, float coverage_C
+	, Expression *fertility)
+{
+	int ind_bos = d.convert("<s>"), ind_eos = d.convert("</s>");
+
+	int tlen = v_params[0].size();// desired target length (excluding BOS and EOS tokens)
+	//std::cerr << "L*=" << tlen << std::endl;
+
+	// collect expected word embeddings
+	//cerr << "BuildRelOptGraph::(1)" << endl;
+	std::vector<Expression> i_wes(tlen+1);
+	i_wes[0] = concatenate_to_batch(std::vector<Expression>(v_params.size(), lookup(cg, p_ct, ind_bos)));// known BOS embedding (batched)
+	//cerr << "BuildRelOptGraph::(1a)" << endl;
+	for(auto t : boost::irange(0, tlen)){
+		//cerr << "t=" << t << endl;
+		auto ct = t;
+		if (reverse == true) ct = tlen - t - 1;
+		
+		//cerr << "BuildRelOptGraph::(1b)" << endl;
+		std::vector<Expression> v_ps;
+		for (unsigned bs = 0; bs < v_params.size(); bs++){			
+			if (algo == RELOPT_ALGO::SOFTMAX){// SOFTMAX approach
+				Expression i_p = parameter(cg, v_params[bs][ct]);
+				v_ps.push_back(GetWordEmbeddingVector(softmax(i_p)));
+			}
+			else if (algo == RELOPT_ALGO::SPARSEMAX){// SPARSEMAX approach
+				Expression i_p = parameter(cg, v_params[bs][ct]);
+				v_ps.push_back(GetWordEmbeddingVector(sparsemax(i_p)));
+			}
+			else if (algo == RELOPT_ALGO::EG || algo == RELOPT_ALGO::AEG){// EG or AEG approach
+				Expression i_p = parameter(cg, v_params[bs][ct]);
+				v_ps.push_back(GetWordEmbeddingVector(i_p));
+			}
+			else
+				assert("Unknown relopt algo! Failed!");
+		}		
+
+		i_wes[t+1] = concatenate_to_batch(v_ps);// batched 
+	}
+
+	// simulated generation step
+	//cerr << "BuildRelOptGraph::(2)" << endl;
+	std::vector<Expression> v_costs, v_ents;
+	std::vector<unsigned> v_EOSs(v_params.size(), ind_eos);
+	for(auto t : boost::irange(0, tlen+1)) {
+		//std::cerr << "t:" << t << std::endl;
+		Expression i_r_t = AddInput(i_wes[t]/*"batched" expected word embedding*/, t, cg);
+
+		// Run the softmax and calculate the cost
+		Expression i_cost;
+		if (t >= tlen){// for predicting EOS
+			i_cost = pickneglogsoftmax(i_r_t, v_EOSs);// batched
+		}
+		else{// for predicting others
+			Expression i_softmax = softmax(i_r_t);
+
+			auto ct = t;
+			if (reverse == true) ct = tlen - t - 1;
+		
+			std::vector<Expression> v_ys;
+			for (unsigned bs = 0; bs < v_params.size(); bs++){				
+				if (algo == RELOPT_ALGO::SOFTMAX){// SOFTMAX approach
+					Expression i_p = parameter(cg, v_params[bs][ct]);
+					v_ys.push_back(softmax(i_p));
+				}
+				else if (algo == RELOPT_ALGO::SPARSEMAX){// SPARSEMAX approach
+					Expression i_p = parameter(cg, v_params[bs][ct]);
+					v_ys.push_back(sparsemax(i_p));
+				}
+				else if (algo == RELOPT_ALGO::EG || algo == RELOPT_ALGO::AEG){// EG or AEG approach
+					v_ys.push_back(parameter(cg, v_params[bs][ct]));
+				}
+				else
+					assert("Unknown inference algo!");
+			}
+
+			Expression i_y = concatenate_to_batch(v_ys);// batched 
+			
+			//i_cost = -log(transpose(i_y) * i_softmax);
+			i_cost = -transpose(i_y) * log(i_softmax);//FIXME: use log_softmax(i_r_t) instead, faster?
+
+			// add entropy regularizer to SOFTMAX or SPARSEMAX cost function
+			if (algo == RELOPT_ALGO::SOFTMAX || algo == RELOPT_ALGO::SPARSEMAX){
+				Expression i_entropy = -transpose(i_y) * log(i_y);
+				v_ents.push_back(i_entropy);
+			}
+		}
+		
+		v_costs.push_back(i_cost);
+	}
+
+	if (entropy != 0 && v_ents.size() > 0){
+		*entropy = sum_batches(sum(v_ents));
+	}
+
+	// save the alignment for later
+	if (alignment != 0) {
+		// pop off the last alignment column
+		*alignment = concatenate_cols(aligns);
+	}
+
+	if (coverage != nullptr || fertility != nullptr) {
+		Expression i_aligns = (alignment != 0) ? *alignment : concatenate_cols(aligns);
+		Expression i_totals = sum_cols(i_aligns);
+		Expression i_total_trim = pickrange(i_totals, 1, slen-1);// only care about the non-null entries
+
+		// AM for computer vision paper (Xu K. et al, 2015) has a penalty over alignment rows deviating from 1
+		if (coverage != nullptr) {
+			//Expression i_ones = repeat(cg, slen-2, 1.0f, auxiliary_vector());
+			Expression i_ones = repeat(cg, slen-2, coverage_C, auxiliary_vector());
+			Expression i_penalty = squared_distance(i_total_trim, i_ones);
+			*coverage = sum_batches(i_penalty);
+		} 
+
+		// contextual fertility model (Cohn et al., 2016)
+		if (fertility != nullptr) {
+			assert(global_fertility);
+
+			Expression fbias = concatenate_cols(std::vector<Expression>(slen, parameter(cg, p_bfhid)));
+			Expression mbias = concatenate(std::vector<Expression>(slen, parameter(cg, p_bfmu)));
+			Expression vbias = concatenate(std::vector<Expression>(slen, parameter(cg, p_bfvar)));
+			Expression fhid = tanh(transpose(fbias + parameter(cg, p_Wfhid) * src));  
+			Expression mu = mbias + fhid * parameter(cg, p_Wfmu);
+			Expression var = exp(vbias + fhid * parameter(cg, p_Wfvar));
+
+			Expression mu_trim = pickrange(mu, 1, slen-1);
+			Expression var_trim = pickrange(var, 1, slen-1);
+
+#if 0
+			/* log-Normal distribution */
+			Expression log_fert = log(i_total_trim);
+			Expression delta = log_fert - mu_trim;
+			//Expression exponent = cdiv(-cwise_multiply(delta, delta), 2.0f * var_trim);
+			Expression exponent = cdiv(-cmult(delta, delta), 2.0f * var_trim);// cmult is a new version of cwise_multiply
+			Expression partition = -log_fert - 0.5 * log(2.0f * var_trim * 3.14159265359);
+			*fertility = -sum_cols(transpose(partition + exponent));
+#else
+			/* Normal distribution */
+			Expression delta = i_total_trim - mu_trim;
+			//Expression exponent = cdiv(-cwise_multiply(delta, delta), 2.0f * var_trim);
+			Expression exponent = cdiv(-cmult(delta, delta), 2.0f * var_trim);// cmult is a new version of cwise_multiply
+			Expression partition = -0.5 * log(2.0f * var_trim * 3.14159265359);
+			*fertility = sum_batches(-sum_cols(transpose(partition + exponent)));
+			// note that as this is the value of the normal density, the errors
+			// are not strictly positive
+#endif
+
+			//LOLCAT(transpose(i_total_trim));
+			//LOLCAT(transpose(mu_trim));
+			//LOLCAT(transpose(var_trim));
+			//LOLCAT(transpose(partition + exponent));
+			//LOLCAT(exp(transpose(partition + exponent)));
+		}
+	}
+
+	//cerr << "BuildRelOptGraph::(3)" << endl;
+	Expression i_full_cost = sum_batches(sum(v_costs));
+	return i_full_cost;
+}
+
+template <class Builder>
 void AttentionalModel<Builder>::StartNewInstance(size_t algo
 	, std::vector<dynet::Parameter>& v_params
 	, Dict &sd
 	, ComputationGraph &cg)
 {
 	std::vector<Expression> exp_wrd_embeddings;
-	exp_wrd_embeddings.push_back(lookup(cg, p_cs, sd.convert("<s>")));
+	exp_wrd_embeddings.push_back(lookup(cg, p_cs, sd.convert("<s>")));// BOS
 	for(auto t : boost::irange(0, (int)v_params.size())){		
-	if (algo == RELOPT_ALGO::SOFTMAX){// SOFTMAX approach
-		Expression i_p = parameter(cg, v_params[t]);
-		exp_wrd_embeddings.push_back(GetWordEmbeddingVector(softmax(i_p)));
+		if (algo == RELOPT_ALGO::SOFTMAX){// SOFTMAX approach
+			Expression i_p = parameter(cg, v_params[t]);
+			exp_wrd_embeddings.push_back(GetWordEmbeddingVector(softmax(i_p)));
+		}
+		else if (algo == RELOPT_ALGO::SPARSEMAX){// SPARSEMAX approach
+			Expression i_p = parameter(cg, v_params[t]);
+			exp_wrd_embeddings.push_back(GetWordEmbeddingVector(sparsemax(i_p)));
+		}
+		else if (algo == RELOPT_ALGO::EG || algo == RELOPT_ALGO::AEG){// EG or AEG approach
+			Expression i_p = parameter(cg, v_params[t]);
+			exp_wrd_embeddings.push_back(GetWordEmbeddingVector(i_p));
+		}
+		else
+			assert("Unknown relopt algo! Failed!");		
 	}
-	else if (algo == RELOPT_ALGO::SPARSEMAX){// SPARSEMAX approach
-		Expression i_p = parameter(cg, v_params[t]);
-		exp_wrd_embeddings.push_back(GetWordEmbeddingVector(sparsemax(i_p)));
-	}
-	else if (algo == RELOPT_ALGO::EG || algo == RELOPT_ALGO::AEG){// EG or AEG approach
-		Expression i_p = parameter(cg, v_params[t]);
-		exp_wrd_embeddings.push_back(GetWordEmbeddingVector(i_p));
-	}
-	else
-		assert("Unknown relopt algo! Failed!");		
-	}
-	exp_wrd_embeddings.push_back(lookup(cg, p_cs, sd.convert("</s>")));
+	exp_wrd_embeddings.push_back(lookup(cg, p_cs, sd.convert("</s>")));// EOS
 
 	slen = exp_wrd_embeddings.size();//v_params.size() + 2/*BOS and EOS*/; 
 	std::vector<Expression> source_embeddings;
 	if (!rnn_src_embeddings) {
-	for (unsigned s = 0; s < slen; ++s) 
-		source_embeddings.push_back(exp_wrd_embeddings[s]);
+		for (unsigned s = 0; s < slen; ++s) 
+			source_embeddings.push_back(exp_wrd_embeddings[s]);
+	}
+	else {
+		// run a RNN backward and forward over the source sentence
+		// and stack the top-level hidden states from each model as 
+		// the representation at each position
+		std::vector<Expression> src_fwd(slen);
+		builder_src_fwd.new_graph(cg);
+		builder_src_fwd.start_new_sequence();
+		for (unsigned i = 0; i < slen; ++i) 
+			src_fwd[i] = builder_src_fwd.add_input(exp_wrd_embeddings[i]);
+
+		std::vector<Expression> src_bwd(slen);
+		builder_src_bwd.new_graph(cg);
+		builder_src_bwd.start_new_sequence();
+		for (int i = slen-1; i >= 0; --i) {
+			// offset by one position to the right, to catch </s> and generally
+			// not duplicate the w_t already captured in src_fwd[t]
+			src_bwd[i] = builder_src_bwd.add_input(exp_wrd_embeddings[i]);
+		}
+
+		for (unsigned i = 0; i < slen; ++i) 
+			source_embeddings.push_back(concatenate(std::vector<Expression>({src_fwd[i], src_bwd[i]})));
+	}
+	src = concatenate_cols(source_embeddings); 
+
+	// now for the target sentence
+	i_R = parameter(cg, p_R); // hidden -> word rep parameter
+	i_Q = parameter(cg, p_Q);
+	i_P = parameter(cg, p_P);
+	i_bias = parameter(cg, p_bias);  // word bias
+	i_Wa = parameter(cg, p_Wa); 
+	i_Ua = parameter(cg, p_Ua);
+	i_va = parameter(cg, p_va);
+	i_uax = i_Ua * src; 
+
+	// reset aux_vecs counter, allowing the memory to be reused
+	num_aux_vecs = 0;
+
+	if (giza_fertility || giza_markov || giza_positional) {
+	i_Ta = parameter(cg, p_Ta);   
+		if (giza_positional) {
+			i_src_idx = arange(cg, 0, slen, true, auxiliary_vector());
+			i_src_len = repeat(cg, slen, std::log(1.0 + slen), auxiliary_vector());
+		}
+	}
+
+	aligns.clear();
+	aligns.push_back(repeat(cg, slen, 0.0f, auxiliary_vector()));
+
+	// initialilse h from global information of the source sentence
+#ifndef RNN_H0_IS_ZERO
+	std::vector<Expression> h0;
+	Expression i_src = average(source_embeddings); // try max instead?
+
+	int hidden_layers = builder.num_h0_components();
+	for (int l = 0; l < hidden_layers; ++l) {
+		Expression i_Wh0 = parameter(cg, p_Wh0[l]);
+		h0.push_back(tanh(i_Wh0 * i_src));
+	}
+
+	builder.new_graph(cg); 
+	builder.start_new_sequence(h0);
+#else
+	builder.new_graph(cg); 
+	builder.start_new_sequence();
+#endif
+}
+
+template <class Builder>
+void AttentionalModel<Builder>::StartNewInstance(size_t algo
+	, std::vector<std::vector<dynet::Parameter>>& v_params
+	, Dict &sd
+	, ComputationGraph &cg)
+{
+	std::vector<Expression> exp_wrd_embeddings;
+	exp_wrd_embeddings.push_back(concatenate_to_batch(std::vector<Expression>(v_params.size(), lookup(cg, p_cs, sd.convert("<s>")))));// BOS
+	for(auto t : boost::irange(0, (int)v_params[0].size())){		
+		std::vector<Expression> v_ps;
+		for (unsigned bs = 0; bs < v_params.size(); bs++){
+			if (algo == RELOPT_ALGO::SOFTMAX){// SOFTMAX approach
+				Expression i_p = parameter(cg, v_params[bs][t]);
+				v_ps.push_back(GetWordEmbeddingVector(softmax(i_p)));
+			}
+			else if (algo == RELOPT_ALGO::SPARSEMAX){// SPARSEMAX approach
+				Expression i_p = parameter(cg, v_params[bs][t]);
+				v_ps.push_back(GetWordEmbeddingVector(sparsemax(i_p)));
+			}
+			else if (algo == RELOPT_ALGO::EG || algo == RELOPT_ALGO::AEG){// EG or AEG approach
+				Expression i_p = parameter(cg, v_params[bs][t]);
+				v_ps.push_back(GetWordEmbeddingVector(i_p));
+			}
+			else
+				assert("Unknown relopt algo! Failed!");
+		}
+		exp_wrd_embeddings.push_back(concatenate_to_batch(v_ps));
+	}
+	exp_wrd_embeddings.push_back(concatenate_to_batch(std::vector<Expression>(v_params.size(), lookup(cg, p_cs, sd.convert("</s>")))));// EOS
+
+	slen = exp_wrd_embeddings.size();//v_params.size() + 2/*BOS and EOS*/; 
+	std::vector<Expression> source_embeddings;
+	if (!rnn_src_embeddings) {
+		for (unsigned s = 0; s < slen; ++s) 
+			source_embeddings.push_back(exp_wrd_embeddings[s]);
 	}
 	else {
 		// run a RNN backward and forward over the source sentence
@@ -1474,6 +1775,35 @@ Expression AttentionalModel<Builder>::BuildRevRelOptGraph(
 }
 
 template <class Builder>
+Expression AttentionalModel<Builder>::BuildRevRelOptGraph(
+	size_t algo
+	, std::vector<std::vector<dynet::Parameter>>& v_params /*source*/
+	, const std::vector<int>& target
+	, dynet::ComputationGraph & cg
+	, Dict &sd /*source vocabulary*/
+	, Expression *alignment)
+{
+	StartNewInstance(algo, v_params, sd, cg);
+
+	std::vector<Expression> errs;
+	const unsigned tlen = target.size() - 1; 
+	for (unsigned t = 0; t < tlen; ++t) {
+		Expression i_r_t = AddInput(target[t], t, cg);
+		Expression i_err = pickneglogsoftmax(i_r_t, target[t+1]);
+		errs.push_back(i_err);
+	}
+
+	// save the alignment for later
+	if (alignment != 0) {
+		// pop off the last alignment column
+		*alignment = concatenate_cols(aligns);
+	}
+
+	Expression i_nerr = sum_batches(sum(errs));
+	return i_nerr;
+}
+
+template <class Builder>
 std::string AttentionalModel<Builder>::GetRelOptOutput(dynet::ComputationGraph& cg
 	, const std::vector<dynet::Parameter>& v_relopt_params, size_t algo, Dict &d, bool verbose)
 {
@@ -1509,6 +1839,69 @@ std::string AttentionalModel<Builder>::GetRelOptOutput(dynet::ComputationGraph& 
 	if (verbose)  std::cerr << std::endl;
 
 	return ss.str();// optimised output
+}
+
+template <class Builder>
+std::string AttentionalModel<Builder>::GetRelOptOutput(unsigned strategy, dynet::ComputationGraph& cg, const Sentence& i_src_sent
+	, const std::vector<std::vector<dynet::Parameter>>& v_relopt_params, size_t algo, Dict &d, bool verbose)
+{
+	int ind_bos = d.convert("<s>"), ind_eos = d.convert("</s>");
+
+	Sentence i_best_dec_sent;
+	float best_loss = std::numeric_limits<float>::max();
+	if (strategy == 0){//minimum loss strategy	
+		for (unsigned k = 0; k < v_relopt_params.size(); k++){
+			Sentence i_trg;
+			for (auto& p : v_relopt_params[k]){
+				Expression i_y;
+				if (algo == RELOPT_ALGO::EG || algo == RELOPT_ALGO::AEG)
+					i_y = parameter(cg, p);
+				else if (algo == RELOPT_ALGO::SOFTMAX)
+					i_y = softmax(parameter(cg, p));
+				else if (algo == RELOPT_ALGO::SPARSEMAX)
+					i_y = sparsemax(parameter(cg, p));
+
+				//cg.incremental_forward();
+
+				std::vector<float> v_y_dist = as_vector(i_y.value());
+
+				// FIXME: Add the bos/eos/unk penalties if required
+				//v_y_dist[] = -1.f;// penalty since <s> never appears in the middle of a target sentence.
+				//v_y_dist[GetUnkId()] = -1.f;
+
+				//cerr << "[y]=" << print_vec(v_y_dist) << endl;
+				std::vector<float>::iterator it = std::max_element(v_y_dist.begin(), v_y_dist.end());
+				int index = std::distance(v_y_dist.begin(), it);
+				if (index == ind_eos)// FIXME: early ignorance
+					break;
+				i_trg.push_back(index);
+				//ss << d.convert(index) << " ";
+				//if (verbose) std::cerr << d.convert(index) << "(" << *it << ")" << " ";// console output				
+			}
+
+			// get the loss --> FIXME: take time?
+			i_trg.insert(i_trg.begin(), ind_bos);// BOS
+			i_trg.push_back(ind_eos);// EOS
+			ModelStats stats;
+			auto iloss = (1.f / (float)(i_trg.size() - 1)) * BuildGraph(i_src_sent, i_trg, cg, stats);// normalized NLL
+			float loss = as_scalar(cg.forward(iloss));
+			cerr << "loss_" << k << "=" << loss << endl;
+			cerr << "sent_" << k << "=" << Convert2Str(d, i_trg, false) << endl;
+			if (loss < best_loss){
+				best_loss = loss;
+				i_best_dec_sent = i_trg;
+			}
+		}
+	}
+	else if (strategy == 1){//average distribution strategy
+		// FIXME
+	}
+
+	if (verbose)  std::cerr << std::endl;
+
+	//cerr << "best_loss=" << best_loss << endl;
+
+	return Convert2Str(d, i_best_dec_sent, false);// optimised output
 }
 //---------------------------------------------------------------------------------------------
 

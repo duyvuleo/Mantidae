@@ -66,12 +66,15 @@ template <class AM_t> void Test_Rescore(Model &model
 	, Corpus &testing
 	, bool doco);
 template <class AM_t> void Test_Decode(Model &model
-	, AM_t &am, std::string test_file
+	//, AM_t &am
+	, std::vector<std::shared_ptr<AM_t>>& ams
+	, std::string test_file
 	, bool doco
 	, unsigned beam
 	, bool r2l_target=false);
 template <class AM_t> void Test_Decode_Nbest(Model &model
-	, AM_t &am
+	//, AM_t &am
+	, std::vector<std::shared_ptr<AM_t>>& ams
 	, string test_file
 	, unsigned beam
 	, unsigned nbest_size
@@ -79,6 +82,10 @@ template <class AM_t> void Test_Decode_Nbest(Model &model
 	, bool r2l_target=false);
 template <class AM_t> void Test_Kbest_Arcs(Model &model, AM_t &am, string test_file, unsigned top_k);
 template <class AM_t> void Show_Fert_Stats(Model &model, AM_t &am, Corpus &devel, bool global_fert);
+
+template <class AM_t> void LoadEnsembleModels(const string& conf_file
+	, std::vector<std::shared_ptr<AM_t>>& ams
+	, std::vector<std::shared_ptr<Model>>& mods);
 
 const Sentence* GetContext(const Corpus &corpus, unsigned i);
 
@@ -114,11 +121,13 @@ int main(int argc, char** argv) {
 		("nbest_size", value<unsigned>()->default_value(1), "nbest size of translation generation/decoding; 1 by default")
 		("print_nbest_scores", "print nbest translations with their scores; no by default")
 		("kbest,K", value<string>(), "test on kbest inputs using monolingual Markov model")
+		("ensemble_conf", value<string>(), "specify the configuration of different AM models for ensemble decoding")
 		//-----------------------------------------
 		("minibatch_size", value<unsigned>()->default_value(1), "impose the minibatch size for training (support both GPU and CPU); no by default")
 		//-----------------------------------------
 		("sgd_trainer", value<unsigned>()->default_value(0), "use specific SGD trainer (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam; 5: RMSProp; 6: cyclical SGD)")
 		("sparse_updates", value<bool>()->default_value(true), "enable/disable sparse update(s) for lookup parameter(s); true by default")
+		("g_clip_threshold", value<float>()->default_value(5.f), "use specific gradient clipping threshold (https://arxiv.org/pdf/1211.5063.pdf); 5 by default")
 		//-----------------------------------------
 		("initialise,i", value<string>(), "load initial parameters from file")
 		("parameters,p", value<string>(), "save best parameters to this file")
@@ -341,68 +350,89 @@ int main_body(variables_map vm)
 
 	Model model;
 	Trainer* sgd = nullptr;
-	unsigned sgd_type = vm["sgd_trainer"].as<unsigned>();
-	if (sgd_type == 1)
-		sgd = new MomentumSGDTrainer(model, vm["lr_eta"].as<float>());
-	else if (sgd_type == 2)
-		sgd = new AdagradTrainer(model, vm["lr_eta"].as<float>());
-	else if (sgd_type == 3)
-		sgd = new AdadeltaTrainer(model);
-	else if (sgd_type == 4)
-		sgd = new AdamTrainer(model, vm["lr_eta"].as<float>());
-	else if (sgd_type == 5)
-		sgd = new RMSPropTrainer(model, vm["lr_eta"].as<float>());
-	else if (sgd_type == 6)
-		sgd = new CyclicalSGDTrainer(model, vm["lr_eta"].as<float>()/10, vm["lr_eta"].as<float>(), (float)8 * (float)training.size()/MINIBATCH_SIZE , 0.99994f);// FIXME: these hyperparameters are empirically set. Also see the original paper! 
-	else if (sgd_type == 0)//Vanilla SGD trainer
-		sgd = new SimpleSGDTrainer(model, vm["lr_eta"].as<float>());
-	else
-	   assert("Unknown SGD trainer type! (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam)");
-	sgd->eta_decay = vm["lr_eta_decay"].as<float>();
-	sgd->sparse_updates_enabled = vm["sparse_updates"].as<bool>();
-	if (!sgd->sparse_updates_enabled)
-		cerr << "Sparse updates for lookup parameter(s) to be disabled!" << endl;
-
-	cerr << "%% Using " << flavour << " recurrent units" << endl;
-	AttentionalModel<rnn_t> am(&model, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE
-		, SLAYERS, TLAYERS, HIDDEN_DIM, ALIGN_DIM
-		, bidir
-		, giza_pos, giza_markov, giza_fert
-		, doco
-		, fert);
-
-	am.Set_Dropout(vm["dropout_enc"].as<float>(), vm["dropout_dec"].as<float>());
-
-	bool add_fert = false;
-	if (vm.count("test") || vm.count("kbest")){
-		am.Add_Global_Fertility_Params(&model, HIDDEN_DIM, bidir);// testing/rescoring phase: add extra global fertility parameters (uninitialized model parameters)
-		add_fert = true;
+	if (!vm.count("test") && !vm.count("kbest") && !vm.count("fert-stats")){
+		unsigned sgd_type = vm["sgd_trainer"].as<unsigned>();
+		if (sgd_type == 1)
+			sgd = new MomentumSGDTrainer(model, vm["lr_eta"].as<float>());
+		else if (sgd_type == 2)
+			sgd = new AdagradTrainer(model, vm["lr_eta"].as<float>());
+		else if (sgd_type == 3)
+			sgd = new AdadeltaTrainer(model);
+		else if (sgd_type == 4)
+			sgd = new AdamTrainer(model, vm["lr_eta"].as<float>());
+		else if (sgd_type == 5)
+			sgd = new RMSPropTrainer(model, vm["lr_eta"].as<float>());
+		else if (sgd_type == 6)
+			sgd = new CyclicalSGDTrainer(model, vm["lr_eta"].as<float>()/10, vm["lr_eta"].as<float>(), (float)8 * (float)training.size()/MINIBATCH_SIZE , 0.99994f);// FIXME: these hyperparameters are empirically set. Also see the original paper! 
+		else if (sgd_type == 0)//Vanilla SGD trainer
+			sgd = new SimpleSGDTrainer(model, vm["lr_eta"].as<float>());
+		else
+	   	assert("Unknown SGD trainer type! (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam)");
+		sgd->eta_decay = vm["lr_eta_decay"].as<float>();
+		sgd->clip_threshold = vm["g_clip_threshold"].as<float>();// * MINIBATCH_SIZE;// use larger gradient clipping threshold if training with mini-batching???
+		sgd->sparse_updates_enabled = vm["sparse_updates"].as<bool>();
+		if (!sgd->sparse_updates_enabled)
+			cerr << "Sparse updates for lookup parameter(s) to be disabled!" << endl;
 	}
 
-	if (vm.count("initialise")) Initialise(model, vm["initialise"].as<string>());
+	// FIXME: to support different models with different RNN structures?
+	std::vector<std::shared_ptr<AttentionalModel<rnn_t>>> v_ams;
+	std::vector<std::shared_ptr<Model>> v_mods;
+	std::shared_ptr<AttentionalModel<rnn_t>> pam(nullptr);// for training only
+	if (vm.count("ensemble_conf"))//ensemble decoding
+		LoadEnsembleModels(vm["ensemble_conf"].as<string>(), v_ams, v_mods);
+	else{
+		cerr << "%% Using " << flavour << " recurrent units" << endl;
+		
+		//AttentionalModel<rnn_t> am(&model, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE
+		//	, SLAYERS, TLAYERS, HIDDEN_DIM, ALIGN_DIM
+		//	, bidir
+		//	, giza_pos, giza_markov, giza_fert
+		//	, doco
+		//	, fert);
+		pam.reset(new AttentionalModel<rnn_t>(&model, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE
+			, SLAYERS, TLAYERS, HIDDEN_DIM, ALIGN_DIM
+			, bidir
+			, giza_pos, giza_markov, giza_fert
+			, doco
+			, fert));
 
-	if (fert && !add_fert) am.Add_Global_Fertility_Params(&model, HIDDEN_DIM, bidir);// training phase: add extra global fertility parameters to already-initialized model parameters
+		pam->Set_Dropout(vm["dropout_enc"].as<float>(), vm["dropout_dec"].as<float>());
+		
+		bool add_fert = false;
+		if (vm.count("test") || vm.count("kbest")){
+			pam->Add_Global_Fertility_Params(&model, HIDDEN_DIM, bidir);// testing/rescoring phase: add extra global fertility parameters (uninitialized model parameters)
+			add_fert = true;
+		}
 
-	cerr << "Count of model parameters: " << model.parameter_count() << endl << endl;
+		if (vm.count("initialise")) Initialise(model, vm["initialise"].as<string>());
+
+		if (fert && !add_fert) pam->Add_Global_Fertility_Params(&model, HIDDEN_DIM, bidir);// training phase: add extra global fertility parameters to already-initialized model parameters
+
+		cerr << "Count of model parameters: " << model.parameter_count() << endl << endl;
+
+		v_ams.push_back(pam);
+	}
 
 	if (!vm.count("test") && !vm.count("kbest") && !vm.count("fert-stats"))
-		TrainModel_Batch(model, am, training, devel, *sgd, fname, vm.count("curriculum"),
+		TrainModel_Batch(model, *v_ams[0], training, devel, *sgd, fname, vm.count("curriculum"),
 		vm["epochs"].as<int>(), vm["lr_epochs"].as<int>()
 		, doco, vm["coverage"].as<float>()
 		, vm.count("display")
 		, fert, vm["fert-weight"].as<float>());
 	else if (vm.count("kbest"))
-		Test_Kbest_Arcs(model, am, vm["kbest"].as<string>(), vm["topk"].as<unsigned>());
+		Test_Kbest_Arcs(model, *v_ams[0], vm["kbest"].as<string>(), vm["topk"].as<unsigned>());
 	else if (vm.count("test")) {
 		if (vm.count("rescore")){//e.g., compute perplexity scores
 			cerr << "Rescoring..." << endl;
-			Test_Rescore(model, am, testing, doco);
+			Test_Rescore(model, *v_ams[0], testing, doco);
 		}
 		else{ // test/decode
 			if (vm["nbest_size"].as<unsigned>() > 1){
 				cerr <<  vm["nbest_size"].as<unsigned>() << "-best Decoding..." << endl;
 				Test_Decode_Nbest(model
-					, am
+					//, *v_ams[0]
+					, v_ams
 					, vm["test"].as<string>()
 					, vm["beam"].as<unsigned>()
 					, vm["nbest_size"].as<unsigned>()
@@ -412,7 +442,8 @@ int main_body(variables_map vm)
 			else{
 				cerr << "Decoding..." << endl;			
 				Test_Decode(model
-					, am
+					//, *v_ams[0]
+					, v_ams
 					, vm["test"].as<string>()
 					, doco
 					, vm["beam"].as<unsigned>()
@@ -423,7 +454,7 @@ int main_body(variables_map vm)
 		cerr << "Decoding completed!" << endl;
 	}
 	else if (vm.count("fert-stats"))
-		Show_Fert_Stats(model, am, devel, vm.count("fertility"));
+		Show_Fert_Stats(model, *v_ams[0], devel, vm.count("fertility"));
 
 	cerr << "Cleaning up..." << endl;
 	delete sgd;
@@ -472,11 +503,13 @@ void Test_Rescore(Model &model, AM_t &am, Corpus &testing, bool doco)
 }
 
 template <class AM_t>
-void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned beam, bool r2l_target)
+//void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned beam, bool r2l_target)
+void Test_Decode(Model &model, std::vector<std::shared_ptr<AM_t>>& ams, string test_file, bool doco, unsigned beam, bool r2l_target)
 {
 	int lno = 0;
 
-	EnsembleDecoder<AM_t> edec(std::vector<AM_t*>({&am}), &td);//FIXME: single decoder for now
+	//EnsembleDecoder<AM_t> edec(std::vector<AM_t*>({&am}), &td);//FIXME: single decoder only
+	EnsembleDecoder<AM_t> edec(ams, &td);//FIXME: multiple decoders
 	edec.SetBeamSize(beam);
 
 	cerr << "Reading test examples from " << test_file << endl;
@@ -506,7 +539,7 @@ void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned b
 
 		if (beam > 0){
 			// Trevor's beam search implementation		
-			//target = am.Beam_Decode(source, cg, beam, td, (doco && num[0] == last_docid) ? &last_source : nullptr);
+			//target = am.Beam_Decode(source, cg, beam, td, (doco && num[0] == last_docid) ? &last_source : nullptr);// ensemble decoding not supported yet!
 
 			// Vu's beam search implementation
 			EnsembleDecoderHypPtr trg_hyp = edec.Generate(source, cg);//1-best
@@ -517,12 +550,10 @@ void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned b
 			else {
 				target = trg_hyp->GetSentence();
 				//align = trg_hyp->GetAlignment();
-				//str_trg = ConvertWords(*vocab_trg, sent_trg, false);
+				//str_trg = Convert2iStr(*vocab_trg, sent_trg, false);
 				//MapWords(str_src, sent_trg, align, mapping, str_trg);
 			}
 		}
-		else
-			target = am.Greedy_Decode(source, cg, td, (doco && num[0] == last_docid) ? &last_source : nullptr);
 
 		if (r2l_target)
 			std::reverse(target.begin() + 1, target.end() - 1);
@@ -554,14 +585,16 @@ void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned b
 
 template <class AM_t>
 void Test_Decode_Nbest(Model &model
-		, AM_t &am
+		//, AM_t &am
+		, std::vector<std::shared_ptr<AM_t>>& ams
 		, string test_file
 		, unsigned beam
 		, unsigned nbest_size
 		, bool print_nbest_scores
 		, bool r2l_target)
 {
-	EnsembleDecoder<AM_t> edec(std::vector<AM_t*>({&am}), &td);//FIXME: single decoder for now!
+	//EnsembleDecoder<AM_t> edec(std::vector<AM_t*>({&am}), &td);//FIXME: single decoder for now!
+	EnsembleDecoder<AM_t> edec(ams, &td);//FIXME: multiple decoders
 	edec.SetBeamSize(beam);
 
 	cerr << "Reading test examples from " << test_file << endl;
@@ -601,7 +634,7 @@ void Test_Decode_Nbest(Model &model
 				target = trg_hyp->GetSentence();
 				score = trg_hyp->GetScore();
 				//align = trg_hyp->GetAlignment();
-				//str_trg = ConvertWords(*vocab_trg, sent_trg, false);
+				//str_trg = Convert2iStr(*vocab_trg, sent_trg, false);
 				//MapWords(str_src, sent_trg, align, mapping, str_trg);
 			}
 
@@ -610,11 +643,16 @@ void Test_Decode_Nbest(Model &model
 			if (r2l_target)
 		   		std::reverse(target.begin() + 1, target.end() - 1);
 
+			// n-best with Moses's format 
+			// <line_number1> ||| source ||| target1 ||| AM=score1 || score1
+			// <line_number2> ||| source ||| target2 ||| AM=score2 || score2
+			//...
+
 			// follows Moses's nbest file format
 			stringstream ss;
 
 			// source text
-			ss /*<< lno << " ||| "*/ << line << " ||| ";// FIXME: line number?
+			ss /*<< lno << " ||| "*/ << line << " ||| ";
 		   
 			// target text
 			bool first = true;
@@ -632,7 +670,22 @@ void Test_Decode_Nbest(Model &model
 			ss << endl;
 
 			cout << ss.str();
+			
+			/*
+			// simple format with target1 ||| target2 ||| ...
+			stringstream ss;
+			bool first = true;
+			for (auto &w: target) {
+				if (!first) ss << " ";
+				ss << td.convert(w);
+				first = false;
+			}
+			ss << " ||| ";
+			cout << ss.str();
+			*/
 		}
+
+		//cout << endl;
 
 		if (verbose)
 			cerr << "chug " << lno << "\r" << flush;
@@ -757,6 +810,53 @@ void Show_Fert_Stats(Model &model, AM_t &am, Corpus &devel, bool global_fert)
 		std::cout << "=== sentence " << i << " (" << docid << ") ===\n";
 		am.Display_Empirical_Fertility(ssent, tsent, sd);
 	}
+}
+
+template <class AM_t> void LoadEnsembleModels(const string& conf_file
+	, std::vector<std::shared_ptr<AM_t>>& ams
+	, std::vector<std::shared_ptr<Model>>& mods)
+{
+	cerr << "Loading multiple models..." << endl;	
+
+	unsigned nModels = 0;
+	ams.clear();
+
+	ifstream inpf(conf_file);
+	assert(inpf);
+
+	string line;
+	getline(inpf, line);
+	nModels = atoi(line.c_str());
+
+	ams.resize(nModels);
+	mods.resize(nModels);
+
+	unsigned i = 0;
+	while (getline(inpf, line)){
+		if ("" == line) break;
+
+		// each line has the format: SLAYERS \t TLAYERS \t HIDDEN_DIM \t ALIGN_DIM \t bidir \t giza_pos \t giza_markov \t giza_fert \t fert
+		cerr << "Loading model " << i+1 << "..." << endl;
+		stringstream ss(line);
+		unsigned sl, tl, hd, ad;
+		bool bidir, giza_pos, giza_markov, giza_fert, glo_fert;
+		string model_file;
+		ss >> sl >> tl >> hd >> ad >> bidir >> giza_pos >> giza_markov >> giza_fert >> glo_fert;
+		ss >> model_file;
+		mods[i].reset(new Model());
+		ams[i].reset(new AM_t(mods[i].get(), SRC_VOCAB_SIZE, TGT_VOCAB_SIZE
+			, sl, tl, hd, ad
+			, bidir
+			, giza_pos, giza_markov, giza_fert
+			, false
+			, glo_fert));
+		ams[i]->Add_Global_Fertility_Params(mods[i].get(), hd, bidir);
+		Initialise(*mods[i], model_file);
+
+		cerr << "Done!" << endl;
+		cerr << "Count of model parameters: " << mods[i++]->parameter_count() << endl;
+	}
+	cerr << endl;
 }
 
 template <class AM_t>
@@ -904,6 +1004,8 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			}
 
 			tstats.loss += closs;
+			tstats.words_src += ctstats.words_src;
+			tstats.words_src_unk += ctstats.words_src_unk;  
 			tstats.words_tgt += ctstats.words_tgt;
 			tstats.words_tgt_unk += ctstats.words_tgt_unk;  
 
@@ -948,7 +1050,7 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			cerr << "cov_penalty=" << cov_penalty / tstats.words_src << ' ';
 		if (fert)
 			cerr << "fert_ppl=" << exp(loss_fert / tstats.words_src) << ' ';
-		cerr << "[time_elapsed=" << elapsed << "(msec)" << " (" << tstats.words_tgt / elapsed << " words/msec)]" << endl;  
+		cerr << "[time_elapsed=" << elapsed << "(msec)" << " (" << tstats.words_tgt * 1000 / elapsed << " words/sec)]" << endl;  
 
 		timer_iteration.Reset();	
 
@@ -1141,7 +1243,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 				cg.set_immediate_compute(true);
 				cg.set_check_validity(true);
 			}
-		
+	
 			Expression i_cov_penalty, i_fertility_nll;
 			ModelStats ctstats;
 			Expression i_xent = am.BuildGraph_Batch(train_src_minibatch[train_ids_minibatch[id]], train_trg_minibatch[train_ids_minibatch[id]]
@@ -1168,6 +1270,8 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			}
 
 			tstats.loss += closs;
+			tstats.words_src += ctstats.words_src;
+			tstats.words_src_unk += ctstats.words_src_unk;  
 			tstats.words_tgt += ctstats.words_tgt;
 			tstats.words_tgt_unk += ctstats.words_tgt_unk;  
 
