@@ -124,6 +124,7 @@ int main(int argc, char** argv) {
 		("ensemble_conf", value<string>(), "specify the configuration of different AM models for ensemble decoding")
 		//-----------------------------------------
 		("minibatch_size", value<unsigned>()->default_value(1), "impose the minibatch size for training (support both GPU and CPU); no by default")
+		("dynet-autobatch", value<unsigned>()->default_value(0), "impose the auto-batch mode (support both GPU and CPU); no by default") //--dynet-autobatch 1		
 		//-----------------------------------------
 		("sgd_trainer", value<unsigned>()->default_value(0), "use specific SGD trainer (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam; 5: RMSProp; 6: cyclical SGD)")
 		("sparse_updates", value<bool>()->default_value(true), "enable/disable sparse update(s) for lookup parameter(s); true by default")
@@ -578,7 +579,7 @@ void Test_Decode(Model &model, std::vector<std::shared_ptr<AM_t>>& ams, string t
 		lno++;
 	}
 
-	double elapsed = timer_dec.Elapsed();
+	double elapsed = timer_dec.elapsed();
 	cerr << "Decoding is finished!" << endl;
 	cerr << "Decoded " << lno << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 }
@@ -693,7 +694,7 @@ void Test_Decode_Nbest(Model &model
 		lno++;
 	}
 
-	double elapsed = timer_dec.Elapsed();
+	double elapsed = timer_dec.elapsed();
 	cerr << "Nbest decoding is finished!" << endl;
 	cerr << "Decoded " << lno << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 	
@@ -937,7 +938,7 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			if (si == training.size()) {
 				//timing
 				cerr << "***Epoch " << sgd.epoch << " is finished. ";
-				timer_epoch.Show();
+				timer_epoch.show();
 
 				si = 0;
 
@@ -956,7 +957,7 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 					cerr << "Curriculum learning, with " << order.size() << " examples\n";
 				} 
 
-				timer_epoch.Reset();
+				timer_epoch.reset();
 			}
 
 			if (verbose && iter+1 == report_every_i) {
@@ -1044,7 +1045,7 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 		if (sgd.epoch >= max_epochs) continue;
 	
 		sgd.status();
-		double elapsed = timer_iteration.Elapsed();
+		double elapsed = timer_iteration.elapsed();
 		cerr << "sents=" << si << " src_unks=" << tstats.words_src_unk << " trg_unks=" << tstats.words_tgt_unk << " E=" << (tstats.loss / tstats.words_tgt) << " ppl=" << exp(tstats.loss / tstats.words_tgt) << ' ';
 		if (cov_weight > 0) 
 			cerr << "cov_penalty=" << cov_penalty / tstats.words_src << ' ';
@@ -1052,7 +1053,7 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			cerr << "fert_ppl=" << exp(loss_fert / tstats.words_src) << ' ';
 		cerr << "[time_elapsed=" << elapsed << "(msec)" << " (" << tstats.words_tgt * 1000 / elapsed << " words/sec)]" << endl;  
 
-		timer_iteration.Reset();	
+		timer_iteration.reset();	
 
 		// show score on dev data?
 		report += report_every_i;
@@ -1079,11 +1080,11 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 			cerr << "***DEV [epoch=" << (lines / (double)training.size()) << " eta=" << sgd.eta << "]" << " sents=" << devel.size() << " src_unks=" << dstats.words_src_unk << " trg_unks=" << dstats.words_tgt_unk << " E=" << (dstats.loss / dstats.words_tgt) << " ppl=" << exp(dstats.loss / dstats.words_tgt) << ' ';
-			timer_iteration.Show();	
+			timer_iteration.show();	
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 		}
 
-		timer_iteration.Reset();
+		timer_iteration.reset();
 	}
 
 	cerr << endl << "Training completed!" << endl;
@@ -1218,7 +1219,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			if (id == train_ids_minibatch.size()) { 
 				//timing
 				cerr << "***Epoch " << sgd.epoch << " is finished. ";
-				timer_epoch.Show();
+				timer_epoch.show();
 
 				id = 0;
 				sid = 0;
@@ -1234,7 +1235,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 				cerr << "***SHUFFLE\n";
 				std::shuffle(train_ids_minibatch.begin(), train_ids_minibatch.end(), *dynet::rndeng);
 
-				timer_epoch.Reset();
+				timer_epoch.reset();
 			}
 
 			// build graph for this instance
@@ -1301,7 +1302,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 					|| id + 1 == train_ids_minibatch.size()){
 				last_print = sid / report_every_i;
 
-				float elapsed = timer_iteration.Elapsed();
+				float elapsed = timer_iteration.elapsed();
 
 				sgd.status();
 				cerr << "sents=" << sid << " ";
@@ -1318,7 +1319,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			++id;
 		}
 
-		timer_iteration.Reset();
+		timer_iteration.reset();
 
 		// show score on dev data?
 		am.Disable_Dropout();// disable dropout for evaluating dev data
@@ -1346,10 +1347,10 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 		cerr << "***DEV [epoch=" << (float)sgd.epoch + (float)sid/(float)training.size() << " eta=" << sgd.eta << "]" << " sents=" << devel.size() << " src_unks=" << dstats.words_src_unk << " trg_unks=" << dstats.words_tgt_unk << " E=" << (dstats.loss / dstats.words_tgt) << " ppl=" << exp(dstats.loss / dstats.words_tgt) << ' ';
-		timer_iteration.Show();
+		timer_iteration.show();
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 
-		timer_iteration.Reset();
+		timer_iteration.reset();
 	}
 
 	cerr << endl << "Training completed!" << endl;

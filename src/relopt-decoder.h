@@ -1551,8 +1551,8 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 		//std::cerr << "GDDecode:3:(4a)" << std::endl;
 		cg.incremental_forward(i_objective);
 
-		elapsed_fwd += timer_steps.Elapsed();
-		timer_steps.Reset();
+		elapsed_fwd += timer_steps.elapsed();
+		timer_steps.reset();
 
 		// grap the parts of the objective
 		//std::cerr << "GDDecode:3:(4b)" << std::endl;
@@ -1583,8 +1583,8 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 		//std::cerr << "GDDecode:3:(5)" << std::endl;
 		cg.backward(i_objective);// backpropagate for all nodes
 
-		elapsed_bwd += timer_steps.Elapsed();
-		timer_steps.Reset();
+		elapsed_bwd += timer_steps.elapsed();
+		timer_steps.reset();
 
 		// (7) update inference parameters with requested optimization method (e.g., SGD, EG)
 		//std::cerr << "GDDecode:3:(6)" << std::endl;
@@ -1596,8 +1596,8 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 		}
 		trainer->update(scale);// only update inference parameters
 
-		elapsed_upd += timer_steps.Elapsed();
-		timer_steps.Reset();
+		elapsed_upd += timer_steps.elapsed();
+		timer_steps.reset();
 
 		// verbose output
 		//std::cerr << "GDDecode:3:(7)" << std::endl;
@@ -1629,8 +1629,8 @@ RelOptOutput RelOptDecoder<AM_t,BAM_t,RNNLM_t>::GDDecode(const string& src_sent
 
 		t++;// next iteration
 
-		elapsed_oth += timer_steps.Elapsed();
-		timer_steps.Reset();
+		elapsed_oth += timer_steps.elapsed();
+		timer_steps.reset();
 	}
 
 	if (verbose_) cerr << "***Best decoding result at step " << best_t << " (continuous cost=" << best_fcost << ")" << endl;

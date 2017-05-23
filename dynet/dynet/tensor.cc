@@ -96,29 +96,21 @@ float TensorTools::access_element(const Tensor& v, int index) {
   return ret;
 }
 
-/*
-float TensorTools::access_element(const Tensor& v, const Dim& index) {
-#if HAVE_CUDA
-  throw std::runtime_error("TensorTools::access_element(Tensor,Dim) not implemented for CUDA");
-#else
-  return (*v)(index[0], index[1]);
-#endif
-}
-*/
-
 //modified by Cong Duy Vu Hoang (vhoang2@student.unimelb.edu.au)
 float TensorTools::access_element(const Tensor& v, const Dim& index) {
+  float ret = 0.;
+  if (v.device->type == DeviceType::CPU) {
+    return (*v)(index[0], index[1]);
+  } else {
 #if HAVE_CUDA
   if (v.device->type == DeviceType::GPU) {
     float ret = 0.0f;
     CUDA_CHECK(cudaMemcpy(&ret, v.v + (v.d.rows() * index[0] + index[1]), sizeof(float), cudaMemcpyDeviceToHost));
     return ret;
-  } else {
-#endif
-  return (*v)(index[0], index[1]);
-#if HAVE_CUDA
   }
 #endif
+  }
+  return ret;
 }
 
 void TensorTools::set_element(const Tensor& v, int index, float value) {
@@ -154,19 +146,6 @@ void TensorTools::set_elements(const Tensor& v, const vector<float>& vec) {
 #if HAVE_CUDA
     if (v.device->type == DeviceType::GPU) {
       cudaMemcpyAsync(v.v, &vec[0], sizeof(real) * vec.size(), cudaMemcpyHostToDevice);
-    }
-#endif
-  }
-}
-
-// added by Cong Duy Vu Hoang (vhoang2@student.unimelb.edu.au)
-void TensorTools::set_elements(const Tensor& v, float* vec, int size) {
-  if (v.device->type == DeviceType::CPU) {
-    memcpy(v.v, vec, sizeof(real) * size);
-  } else {
-#if HAVE_CUDA
-    if (v.device->type == DeviceType::GPU) {
-      cudaMemcpyAsync(v.v, vec, sizeof(real) * size, cudaMemcpyHostToDevice);
     }
 #endif
   }
@@ -349,6 +328,29 @@ real rand_normal() {
 
 // ---- CPU/GPU operations
 // TODO: would like to get rid of all the verbose code dispatching o the appropriate device
+template <class MyDevice>
+void TensorTools::accumulate_dev(MyDevice & dev, Tensor& v, const Tensor& v_src) {
+  DYNET_ASSERT(v.d.size() == v_src.d.size(), "TensorTools::accumulate can only be used with tensors of identical size");
+  v.tvec().device(*dev.edevice) += v_src.tvec();
+}
+#ifdef __CUDACC__
+template void TensorTools::accumulate_dev<Device_GPU>(Device_GPU & dev, Tensor& v, const Tensor& v_src);
+#else
+template void TensorTools::accumulate_dev<Device_CPU>(Device_CPU & dev, Tensor& v, const Tensor& v_src);
+#ifdef HAVE_CUDA
+extern template void TensorTools::accumulate_dev<Device_GPU>(Device_GPU & dev, Tensor& v, const Tensor& v_src);
+void TensorTools::accumulate(Tensor& v, const Tensor& v_src) {
+  if (v.device->type == DeviceType::CPU) { return accumulate_dev(*(Device_CPU*)v.device, v, v_src); }
+  else if (v.device->type == DeviceType::GPU) { return accumulate_dev(*(Device_GPU*)v.device, v, v_src); }
+  else { throw std::runtime_error("Bad device type"); }
+}
+#else
+void TensorTools::accumulate(Tensor& v, const Tensor& v_src) {
+  if (v.device->type == DeviceType::CPU) { return accumulate_dev(*(Device_CPU*)v.device, v, v_src); }
+  else { throw std::runtime_error("Bad device type"); }
+}
+#endif
+#endif
 
 template <class MyDevice>
 void TensorTools::constant_dev(MyDevice & dev, Tensor& d, float c) {

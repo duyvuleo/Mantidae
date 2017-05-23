@@ -298,7 +298,7 @@ void TrainModel(Model &model, RNNLM_t &rnn
 			if (si == order.size()) {
 				//timing
 				cerr << "***Epoch " << sgd_trainer->epoch << " is finished. ";
-				timer_epoch.Show();
+				timer_epoch.show();
 
 				si = 0;
 
@@ -311,7 +311,7 @@ void TrainModel(Model &model, RNNLM_t &rnn
 				cerr << "**SHUFFLE\n";
 				shuffle(order.begin(), order.end(), *rndeng);
 
-				timer_epoch.Reset();
+				timer_epoch.reset();
 			}
 		
 			// build graph for this instance
@@ -339,9 +339,9 @@ void TrainModel(Model &model, RNNLM_t &rnn
 	
 		sgd_trainer->status();
 		cerr << "sents=" << lines << " unks=" << unk_tokens << " E=" << (loss / tokens) << " ppl=" << exp(loss / tokens) << ' ';
-		double elapsed = timer_iteration.Elapsed();		
+		double elapsed = timer_iteration.elapsed();		
 		cerr << "[time_elapsed=" << elapsed << "(msec)" << " (" << tokens * 1000.f / elapsed << " words/sec)]" << endl;  
-		timer_iteration.Reset();
+		timer_iteration.reset();
 
 		//rnn.RandomSample(); // uncomment this to see some randomly-generated sentences
 
@@ -370,8 +370,8 @@ void TrainModel(Model &model, RNNLM_t &rnn
 			//	sgd_trainer->eta *= 0.5;
 		
 			cerr << "\n***DEV [epoch=" << (lines / (double)traincor.size()) << " eta=" << sgd_trainer->eta << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
-			timer_iteration.Show();
-			timer_iteration.Reset();
+			timer_iteration.show();
+			timer_iteration.reset();
 		}
 	}	
 
@@ -426,7 +426,7 @@ void TrainModel_Batch1(Model &model, RNNLM_t &rnn
 			if (si == order.size()) {
 				//timing
 				cerr << "***Epoch " << sgd_trainer->epoch << " is finished. ";
-				timer_epoch.Show();
+				timer_epoch.show();
 
 				si = 0;
 
@@ -439,7 +439,7 @@ void TrainModel_Batch1(Model &model, RNNLM_t &rnn
 				cerr << "**SHUFFLE\n";
 				shuffle(order.begin(), order.end(), *rndeng);
 
-				timer_epoch.Reset();
+				timer_epoch.reset();
 			}
 		
 			// build graph for this instance
@@ -469,9 +469,9 @@ void TrainModel_Batch1(Model &model, RNNLM_t &rnn
 	
 		sgd_trainer->status();
 		cerr << "sents=" << lines << " unks=" << unk_tokens << " E=" << (loss / tokens) << " ppl=" << exp(loss / tokens) << ' ';
-		double elapsed = timer_iteration.Elapsed();		
+		double elapsed = timer_iteration.elapsed();		
 		cerr << "[time_elapsed=" << elapsed << "(msec)" << " (" << tokens * 1000.f / elapsed << " words/sec)]" << endl;  
-		timer_iteration.Reset();
+		timer_iteration.reset();
 
 		//rnn.RandomSample(); // uncomment this to see some randomly-generated sentences
 
@@ -500,8 +500,8 @@ void TrainModel_Batch1(Model &model, RNNLM_t &rnn
 			//	sgd_trainer->eta *= 0.5;
 		
 			cerr << "\n***DEV [epoch=" << (lines / (double)traincor.size()) << " eta=" << sgd_trainer->eta << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
-			timer_iteration.Show();
-			timer_iteration.Reset();
+			timer_iteration.show();
+			timer_iteration.reset();
 		}
 	}	
 
@@ -587,7 +587,7 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 			if (si == train_ids_minibatch.size()) {
 				//timing
 				cerr << "***Epoch " << sgd_trainer->epoch << " is finished. ";
-				timer_epoch.Show();
+				timer_epoch.show();
 
 				si = 0;
 				last_print = 0;								
@@ -602,7 +602,7 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 				cerr << "**SHUFFLE\n";
 				shuffle(train_ids_minibatch.begin(), train_ids_minibatch.end(), *dynet::rndeng);
 
-				timer_epoch.Reset();
+				timer_epoch.reset();
 			}
 		
 			// build graph for this instance
@@ -635,12 +635,12 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 
 				sgd_trainer->status();
 				cerr << "sents=" << lines << " unks=" << unk_tokens << " E=" << (loss / tokens) << " ppl=" << exp(loss / tokens) << ' ';
-				double elapsed = timer_iteration.Elapsed();		
+				double elapsed = timer_iteration.elapsed();		
 				cerr << "[time_elapsed=" << elapsed << "(msec)" << " (" << tokens * 1000.f / elapsed << " words/sec)]" << endl;  
 			}
 		}
 
-		timer_iteration.Reset();
+		timer_iteration.reset();
 
 		if (sgd_trainer->epoch >= MAX_EPOCH) continue;
 
@@ -669,9 +669,9 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 	
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 		cerr << "***DEV [epoch=" << sgd_trainer->epoch + lines / (double)traincor.size() << " eta=" << sgd_trainer->eta << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
-		timer_iteration.Show();
+		timer_iteration.show();
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
-		timer_iteration.Reset();
+		timer_iteration.reset();
 	}	
 
 	cerr << endl << "Training completed!" << endl;	

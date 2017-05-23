@@ -405,7 +405,7 @@ int main_body(variables_map vm)
 			if (si == training.size()) {
 				//timing
 				cerr << "***Epoch " << sgd->epoch << " is finished. ";
-				timer_epoch.Show();
+				timer_epoch.show();
 
 				si = 0;
 
@@ -418,7 +418,7 @@ int main_body(variables_map vm)
 				cerr << "**SHUFFLE\n";
 				shuffle(order.begin(), order.end(), *rndeng);
 
-				timer_epoch.Reset();
+				timer_epoch.reset();
 			}
 
 			// build graph for this instance
@@ -458,9 +458,9 @@ int main_body(variables_map vm)
 		cerr << " ppl_t2s=" << exp(loss_t2s / chars_s) << ' ';
 		cerr << " ppl_s2t=" << exp(loss_s2t / chars_t) << ' ';
 		cerr << " trace=" << exp(loss_trace / chars_tt) << ' ';
-		timer_iteration.Show();
+		timer_iteration.show();
 		
-		timer_iteration.Reset();
+		timer_iteration.reset();
 
 		// show score on dev data?
 		//report++;
@@ -494,11 +494,11 @@ int main_body(variables_map vm)
 			cerr << " ppl_t2s=" << exp(dloss_t2s / dchars_s) << ' ';
 			cerr << " ppl_s2t=" << exp(dloss_s2t / dchars_t) << ' ';
 			cerr << " trace=" << exp(dloss_trace / dchars_tt) << ' ';
-			timer_iteration.Show();	
+			timer_iteration.show();	
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 		}
 
-		timer_iteration.Reset();
+		timer_iteration.reset();
 	}
 
 	// cleaning up

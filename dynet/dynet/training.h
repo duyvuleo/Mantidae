@@ -250,13 +250,13 @@ struct CyclicalSGDTrainer : public Trainer {
    * \param edecay Learning rate decay parameter. Ideally you shouldn't use this with cyclical learning rate since decay is already handled by \f$\gamma\f$
    */
   explicit CyclicalSGDTrainer(Model& m, float e0_min = 0.01, float e0_max = 0.1, float step_size = 2000, float gamma = 0.0, float edecay = 0.0) : Trainer(m, e0_min, edecay), e_min(e0_min), e_max(e0_max), step_size(step_size), gamma(gamma), it(0) {}
-  virtual void update(real scale = 1.0) { Trainer::update(scale);cyclic_update_eta();}
+  void update(real scale = 1.0) { Trainer::update(scale);cyclic_update_eta();}
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   void cyclic_update_eta() {
     float cycle = std::floor(1 + ((float) it)  / (2 * step_size));
     float x = std::abs( ((float) it) / step_size - 2 * cycle + 1);
-    eta = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * std::pow(gamma, it) : 0);
+    eta = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * (real)std::pow(gamma, it) : 0);
     it++;
   }
   float e_min;
@@ -457,14 +457,96 @@ private:
 /**
  * \ingroup optimizers
  * 
+ * \brief Exponentiated gradient optimizer with momentum and cyclical learning rate
+ * \details FIXME
+ *  
+ * Reference : FIXME
+ *   
+*/
+struct EGTrainer : public Trainer {
+  explicit EGTrainer(Model& mod, real e0 = 0.1, real mom = 0.9, real ne = 0.0, real edecay = 0.0)
+    : Trainer(mod, e0, edecay), momentum(mom), isCyclical(false), noise_eta(ne) {
+    zeg.d = meg.d = {1};
+    zeg.device = meg.device = default_device;
+    default_device->allocate_tensor(DeviceMempool::PS, zeg);
+    default_device->allocate_tensor(DeviceMempool::PS, meg);
+  }
+
+//-----------------------------------------------------------------------------------------
+  void enableCyclicalLR(float _e0_min = 0.01, float _e0_max = 0.1, float _step_size = 2000, float _gamma = 0.0){
+    isCyclical = true;
+    e_min = _e0_min;
+    e_max = _e0_max;
+    step_size = _step_size;
+    gamma = _gamma;
+    it = 0;
+  }
+
+  void update_noise_eta(real ne){
+    noise_eta = ne;
+  }  
+
+  virtual void update(real scale = 1.0) override { 
+    Trainer::update(scale); 
+    if (isCyclical) cyclic_update_eta();
+  }
+//-----------------------------------------------------------------------------------------
+
+ protected:
+  DYNET_TRAINER_DEFINE_DEV_IMPL()
+  virtual void alloc_impl() override;
+
+//-----------------------------------------------------------------------------------------
+  real momentum;// with momentum
+  std::vector<ShadowParameters> hp; // (previous) history of parameters
+  std::vector<ShadowLookupParameters> hlp;
+  std::vector<ShadowParameters> np; // noises to be injected to parameters
+  std::vector<ShadowLookupParameters> nlp;// noises to be injected to lookup parameters
+//-----------------------------------------------------------------------------------------
+
+//-----------------------------------------------------------------------------------------
+  void cyclic_update_eta() {
+    float cycle = std::floor(1 + ((float) it)  / (2 * step_size));
+    float x = std::abs( ((float) it) / step_size - 2 * cycle + 1);
+    //std::cerr << "cycle=" << cycle << "; " << "x=" << x << std::endl;
+    eta = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * std::pow(gamma, it) : 0);
+    it++;
+  }
+
+  float e_min = 0;
+  float e_max = 0;
+  float step_size = 0;
+  float gamma = 0;
+  unsigned it = 0;
+  bool isCyclical;
+//-----------------------------------------------------------------------------------------
+
+//-----------------------------------------------------------------------------------------
+// temporary tensors for EG calculation
+  Tensor zeg, meg;
+//-----------------------------------------------------------------------------------------
+
+//-----------------------------------------------------------------------------------------
+  real noise_eta;
+//-----------------------------------------------------------------------------------------
+
+ private:
+  EGTrainer() {}
+  DYNET_SERIALIZE_DECLARE()
+};
+
+// Written by Cong Duy Vu Hoang
+/**
+ * \ingroup optimizers
+ * 
  * \brief Exponentiated gradient optimizer with adaptive learning rates using Adam
  * \details FIXME
  *  
  * Reference : FIXME
  *   
 */
-struct AdaptiveEGTrainer : public Trainer {
-  explicit AdaptiveEGTrainer(Model& mod, real e0 = 0.1, float _beta_1 = 0.9, float _beta_2 = 0.999, float eps = 1e-8, real edecay = 0.0) : 
+struct AdamEGTrainer : public Trainer {
+  explicit AdamEGTrainer(Model& mod, real e0 = 0.001, float _beta_1 = 0.9, float _beta_2 = 0.999, float eps = 1e-8, real edecay = 0.0) : 
     Trainer(mod, e0, edecay), beta_1(_beta_1), beta_2(_beta_2), epsilon(eps) {
     zeg.d = meg.d = {1};
     zeg.device = meg.device = default_device;
@@ -492,7 +574,7 @@ protected:
   std::vector<ShadowLookupParameters> lv;
 
  private:
-  AdaptiveEGTrainer() {}
+  AdamEGTrainer() {}
   DYNET_SERIALIZE_DECLARE()
 };
 
@@ -500,71 +582,106 @@ protected:
 /**
  * \ingroup optimizers
  * 
- * \brief Exponentiated gradient optimizer with momentum and cyclical learning rate
+ * \brief Exponentiated gradient optimizer with adaptive learning rates using RMSProp
  * \details FIXME
  *  
  * Reference : FIXME
  *   
 */
-struct EGTrainer : public Trainer {
-  explicit EGTrainer(Model& mod, real e0 = 0.1, real mom = 0.9, real edecay = 0.0)
-    : Trainer(mod, e0, edecay), momentum(mom), isCyclical(false) {
+struct RMSPropEGTrainer : public Trainer {
+  explicit RMSPropEGTrainer(Model& mod, real e0 = 0.001, real eps = 1e-08, real rho = 0.9, real edecay = 0.0) : 
+    Trainer(mod, e0, edecay), epsilon(eps), rho(rho) {
     zeg.d = meg.d = {1};
     zeg.device = meg.device = default_device;
     default_device->allocate_tensor(DeviceMempool::PS, zeg);
     default_device->allocate_tensor(DeviceMempool::PS, meg);
   }
-
-//-----------------------------------------------------------------------------------------
-  void enableCyclicalLR(float _e0_min = 0.01, float _e0_max = 0.1, float _step_size = 2000, float _gamma = 0.0){
-    isCyclical = true;
-    e_min = _e0_min;
-    e_max = _e0_max;
-    step_size = _step_size;
-    gamma = _gamma;
-    it = 0;
-  }
-
-  virtual void update(real scale = 1.0) { 
-    Trainer::update(scale); 
-    if (isCyclical) cyclic_update_eta();
-  }
-//-----------------------------------------------------------------------------------------
-
- protected:
+ 
+protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
 
-//-----------------------------------------------------------------------------------------
-  real momentum;// with momentum
-  std::vector<ShadowParameters> hp; // (previous) history of parameters
-  std::vector<ShadowLookupParameters> hlp;// unused at the moment
-//-----------------------------------------------------------------------------------------
-
-//-----------------------------------------------------------------------------------------
-  void cyclic_update_eta() {
-    float cycle = std::floor(1 + ((float) it)  / (2 * step_size));
-    float x = std::abs( ((float) it) / step_size - 2 * cycle + 1);
-    //std::cerr << "cycle=" << cycle << "; " << "x=" << x << std::endl;
-    eta = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * std::pow(gamma, it) : 0);
-    it++;
-  }
-
-  float e_min = 0;
-  float e_max = 0;
-  float step_size = 0;
-  float gamma = 0;
-  unsigned it = 0;
-  bool isCyclical;
-//-----------------------------------------------------------------------------------------
+  real epsilon;
+  real rho;
 
 //-----------------------------------------------------------------------------------------
 // temporary tensors for EG calculation
   Tensor zeg, meg;
 //-----------------------------------------------------------------------------------------
 
+  // the following represents the previous params, gradient magnitudes
+  std::vector<ShadowParameters> hmsg; // History of gradients
+  std::vector<ShadowLookupParameters> hlmsg;
+
  private:
-  EGTrainer() {}
+  RMSPropEGTrainer() {}
+  DYNET_SERIALIZE_DECLARE()
+};
+
+/**
+ * \ingroup optimizers
+ *
+ * \brief Stochastic Gradient Langevin Dynamics (SGLD)
+ * \details This trainer performs stochastic gradient langevin dynamics (https://arxiv.org/abs/1611.08034)
+ * In the standard setting, the learning rate at epoch \f$t\f$ is \f$\eta_t=\frac{\eta_0}{1+\eta_{\mathrm{decay}}t}\f$
+ *
+ * Reference : [reference needed](ref.need.ed)
+ *
+ */
+struct SGLDTrainer : public Trainer {
+  /**
+   * \brief Constructor
+   *
+   * \param m Model to be trained
+   * \param e0 Initial learning rate
+   * \param edecay Learning rate decay parameter.
+   */
+  explicit SGLDTrainer(Model& m, real e0 = 0.1, real edecay = 0.0) : Trainer(m, e0, edecay) {}
+
+protected:
+  std::vector<ShadowParameters> np; // noises to be injected to parameters
+  std::vector<ShadowLookupParameters> nlp;// noises to be injected to lookup parameters
+
+protected:
+  DYNET_TRAINER_DEFINE_DEV_IMPL()
+  virtual void alloc_impl() override;
+
+private:
+  SGLDTrainer() {}
+  DYNET_SERIALIZE_DECLARE()
+};
+
+/**
+ * \ingroup optimizers
+ *
+ * \brief Stochastic Preconditioned Gradient Langevin Dynamics (pSGLD)
+ * \details This trainer performs preconditioned stochastic gradient langevin dynamics (https://arxiv.org/abs/1611.08034)
+ *
+ * Reference : [reference needed](ref.need.ed)
+ *
+ */
+struct pSGLDTrainer : public Trainer {
+  /**
+   * \brief Constructor
+   *
+   * \param m Model to be trained
+   * \param e0 Initial learning rate
+   * \param eps Bias parameter \f$\epsilon\f$ in the adagrad formula
+   * \param rho Update parameter for the moving average (`rho = 0` is equivalent to using Adagrad)
+   * \param edecay Learning rate decay parameter
+   */
+  explicit pSGLDTrainer(Model& m, real e0 = 0.001, real eps = 1e-08, real rho = 0.9, real edecay = 0.0) :
+    Trainer(m, e0, edecay), epsilon(eps), rho(rho) {}
+protected:
+  DYNET_TRAINER_DEFINE_DEV_IMPL()
+  virtual void alloc_impl() override;
+
+  real epsilon;
+  real rho;
+  std::vector<ShadowParameters> hmsg; // History of gradients
+  std::vector<ShadowLookupParameters> hlmsg;
+private:
+  pSGLDTrainer() {}
   DYNET_SERIALIZE_DECLARE()
 };
 
@@ -577,7 +694,13 @@ BOOST_CLASS_EXPORT_KEY(dynet::AdagradTrainer)
 BOOST_CLASS_EXPORT_KEY(dynet::AdadeltaTrainer)
 BOOST_CLASS_EXPORT_KEY(dynet::RMSPropTrainer)
 BOOST_CLASS_EXPORT_KEY(dynet::AdamTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::AdaptiveEGTrainer)
+//---
+BOOST_CLASS_EXPORT_KEY(dynet::SGLDTrainer)
+BOOST_CLASS_EXPORT_KEY(dynet::pSGLDTrainer)
+//---
 BOOST_CLASS_EXPORT_KEY(dynet::EGTrainer)
+BOOST_CLASS_EXPORT_KEY(dynet::AdamEGTrainer)
+BOOST_CLASS_EXPORT_KEY(dynet::RMSPropEGTrainer)
+//---
 
 #endif

@@ -399,7 +399,7 @@ int main_body(variables_map vm)
 			}
 		}
 
-		double elapsed = timer_dec.Elapsed();
+		double elapsed = timer_dec.elapsed();
 		cerr << "Relaxed optimisation decoding is finished!" << endl;
 		cerr << "Decoded " << line_count << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 		if (timing){
@@ -444,7 +444,7 @@ int main_body(variables_map vm)
 			cerr << endl;
 		}
 
-		double elapsed = timer_dec.Elapsed();
+		double elapsed = timer_dec.elapsed();
 		cerr << "Relaxed optimisation decoding is finished!" << endl;
 		cerr << "Decoded " << line_count << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 	}

@@ -221,7 +221,6 @@ struct Tensor {
       const unsigned bsize = d.batch_size();
       Dim new_d(d); new_d.bd = 1;
       Tensor ret(new_d, v + bsize * b, device, mem_pool);
-      // std::cerr << "Getting tensor for batch " << (b % d.batch_elems()) << " bsize: " << bsize << ", ptr=" << (long)ret.v << std::endl;
       return ret;
     }
   }
@@ -246,7 +245,6 @@ struct Tensor {
 
   Dim d;  /**< Shape of tensor */
   float* v;  /**< Pointer to memory */
-  std::vector<Tensor> bs;
   Device* device;
   DeviceMempool mem_pool;
 
@@ -673,21 +671,20 @@ struct TensorTools {
    */
   static void set_elements(const Tensor& v, const std::vector<float>& vec);
   /**
-   * \brief Set the elements of a tensor with an array of values
-   * \details (This uses memcpy so be careful)
-   *
-   * \param v Input Tensor
-   * \param vec Values in float*
-   * \param size Size of v
-   */
-  static void set_elements(const Tensor& v, float* vec, int size);//added by Cong Duy Vu Hoang (vhoang2@student.unimelb.edu.au)
-  /**
    * \brief Copy one tensor into another
    *
    * \param v Target tensor
    * \param v_src Source tensor
    */
   static void copy_elements(const Tensor& v, const Tensor& v_src);
+
+  /**
+   * \brief Accumulate the values of one tensor into another
+   *
+   * \param v Target tensor
+   * \param v_src Source tensor
+   */
+  static void accumulate(Tensor& v, const Tensor& v_src);
 
   /**
    * \brief Calculate the index of the maximum value
@@ -718,6 +715,8 @@ protected:
   static void clip_dev(MyDevice & dev, Tensor& d, float left, float right);
   template<class MyDevice>
   static void constant_dev(MyDevice & dev, Tensor& d, float c);
+  template<class MyDevice>
+  static void accumulate_dev(MyDevice & dev, Tensor& v_src, const Tensor& v);
   template<class MyDevice>
   static IndexTensor argmax_dev(MyDevice & dev, const Tensor& v, unsigned dim = 0, unsigned num = 1);
   template<class MyDevice>

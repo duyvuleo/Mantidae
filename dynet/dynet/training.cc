@@ -330,7 +330,8 @@ void AdamTrainer::alloc_impl() {
 }
 #endif
 
-//--------------------------------------------------------------------------------------------------------------------------------------------------
+// ===== Auxiliary functions for both CPU and GPU
+// This function already exists in nodes.cc.
 template <class MyDevice>
 EIGEN_STRONG_INLINE void logsumexp(const MyDevice & dev, const Tensor& x, Tensor & m, Tensor& z) {
   if(x.d.bd == 1 && x.d[1] == 1) {
@@ -369,13 +370,80 @@ EIGEN_STRONG_INLINE void logsumexp(const MyDevice & dev, const Tensor& x, Tensor
 #endif
   }
 }
-//--------------------------------------------------------------------------------------------------------------------------------------------------
 
-// --- AdaptiveEGTrainer
+// --- EGTrainer
+template <class MyDevice>
+void EGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
+  //------------------------------------------------------------------
+  // Add momentum
+  ts[2]->tvec().device(*dev.edevice) = ts[2]->tvec() * momentum - ts[1]->tvec() * (eta * scale * gscale);
+
+  //------------------------------------------------------------------
+  // Initialize white Gaussian noise using stddev as given noise_eta
+  if (noise_eta != 0.f){
+    //cerr << "noise_eta=" << noise_eta << endl;
+    TensorTools::randomize_normal(*ts[5], 0, noise_eta);
+  }
+
+/*
+  //------------------------------------------------------------------
+  // METHOD 1: naive implementation (slow?)
+  std::vector<real> v_params = dynet::as_vector(*ts[0]);// FIXME: not a smart way but it works on both GPU and CPU!
+  std::vector<real> v_grads = dynet::as_vector(*ts[2]);// gradients with momentum
+  Eigen::TensorMap<Eigen::Tensor<real,1>> t_params(&v_params[0], v_params.size());
+  Eigen::TensorMap<Eigen::Tensor<real,1>> t_grads(&v_grads[0], v_grads.size());
+  Eigen::Tensor<real,1> v = t_params.log() + t_grads / model->weight_decay.current_weight_decay();// with momentum
+  
+  Eigen::Tensor<float,0> m = v.maximum();// max
+  Eigen::Tensor<float,0> z = m.coeff() + (v - m.coeff()).exp().sum().log();// Z
+  Eigen::Tensor<float,1> u = (v - z.coeff()).exp();// result
+  TensorTools::set_elements(*ts[0], u.data(), u.dimensions()[0]);// for both GPU and CPU
+  //------------------------------------------------------------------
+*/
+
+  //------------------------------------------------------------------
+  // METHOD 2: advanced implementation (supposedly faster?)
+  if (noise_eta != 0.f)
+    ts[0]->tvec().device(*dev.edevice) = ts[0]->tvec().log() + ts[2]->tvec() / model->weight_decay.current_weight_decay() + ts[5]->tvec();// with noise-injected momentum
+  else ts[0]->tvec().device(*dev.edevice) = ts[0]->tvec().log() + ts[2]->tvec() / model->weight_decay.current_weight_decay();// with momentum only
+
+  logsumexp(dev, *ts[0], *ts[3], *ts[4]);// z refers to logZ
+  //cerr << "max_element=" << as_scalar(m) << endl;
+  //cerr << "logZ=" << as_scalar(z) << endl;
+    
+  ts[0]->tvec().device(*dev.edevice) = (ts[0]->tvec() - as_scalar(*ts[4])).exp();// FIXME: other way(s) of not using as_scalar(z)?
+  //------------------------------------------------------------------
+}
+DYNET_TRAINER_INST_DEV_IMPL(EGTrainer)
+
+#ifndef __CUDACC__
+void EGTrainer::update_params(real scale, real gscale, size_t idx) {
+  auto & p = model->parameters_list()[idx];
+  update_rule(scale, gscale, {&p->values, &p->g, &hp[idx].h, &meg, &zeg, &np[idx].h});
+}
+void EGTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
+  auto & p = model->lookup_parameters_list()[idx];
+  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &hlp[idx].h[lidx], &meg, &zeg, &nlp[idx].h[lidx]});
+}
+void EGTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
+  auto & p = model->lookup_parameters_list()[idx];
+  update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &hlp[idx].all_h, &meg, &zeg, &nlp[idx].all_h});
+}
+void EGTrainer::alloc_impl() {
+  hp = allocate_shadow_parameters(*model);
+  hlp = allocate_shadow_lookup_parameters(*model);
+  if (noise_eta != 0.f){
+    np = allocate_shadow_parameters(*model);
+    nlp = allocate_shadow_lookup_parameters(*model);  
+  }
+}
+#endif
+
+// --- AdamEGTrainer
 
 // Perform update of ts[0]=parameters, ts[1]=gradients, ts[2]=accumulated_gradients
 template <class MyDevice>
-void AdaptiveEGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
+void AdamEGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
   // --------------------------
   // Adam step
   ts[1]->tvec().device(*dev.edevice) = ts[1]->tvec() * (scale * gscale);
@@ -417,22 +485,22 @@ void AdaptiveEGTrainer::update_rule_dev(const MyDevice & dev, real scale, real g
   ts[0]->tvec().device(*dev.edevice) = (ts[0]->tvec() - as_scalar(*ts[5])).exp();// FIXME: other way(s) of not using as_scalar(z)?
   //------------------------------------------------------------------
 }
-DYNET_TRAINER_INST_DEV_IMPL(AdaptiveEGTrainer)
+DYNET_TRAINER_INST_DEV_IMPL(AdamEGTrainer)
 
 #ifndef __CUDACC__
-void AdaptiveEGTrainer::update_params(real scale, real gscale, size_t idx) {
+void AdamEGTrainer::update_params(real scale, real gscale, size_t idx) {
   auto & p = model->parameters_list()[idx];
   update_rule(scale, gscale, {&p->values, &p->g, &m[idx].h, &v[idx].h, &meg, &zeg});
 }
-void AdaptiveEGTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
+void AdamEGTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
   auto & p = model->lookup_parameters_list()[idx];
   update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &lm[idx].h[lidx], &lv[idx].h[lidx], &meg, &zeg});
 }
-void AdaptiveEGTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
+void AdamEGTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
   auto & p = model->lookup_parameters_list()[idx];
   update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &lm[idx].all_h, &lv[idx].all_h, &meg, &zeg});
 }
-void AdaptiveEGTrainer::alloc_impl() {
+void AdamEGTrainer::alloc_impl() {
   m = allocate_shadow_parameters(*model);
   lm = allocate_shadow_lookup_parameters(*model);
   v = allocate_shadow_parameters(*model);
@@ -440,38 +508,43 @@ void AdaptiveEGTrainer::alloc_impl() {
 }
 #endif
 
-// --- EGTrainer
+// --- RMSPropEGTrainer
+
+// Perform update of ts[0]=parameters, ts[1]=gradients, ts[2]=accumulated_gradients
 template <class MyDevice>
-void EGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
-  //------------------------------------------------------------------
-  // Add white Gaussian noise
-  //real stddev = scale;// FIXME: should be an *annealing* factor
-  //TensorTools::RandomizeNormal(0, stddev, *ts[2]);
-  //ts[1]->tvec().device(*dev.edevice) += ts[2]->tvec();
-
-  //------------------------------------------------------------------
-  // Add momentum
-  ts[2]->tvec().device(*dev.edevice) = ts[2]->tvec() * momentum - ts[1]->tvec() * (eta * scale * gscale);
-
+void RMSPropEGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
+  // --------------------------
+  // RMSProp step
+  ts[1]->tvec().device(*dev.edevice) = ts[1]->tvec() * (scale * gscale); // Scale gradient
+  ts[2]->tvec().device(*dev.edevice) = ts[2]->tvec() * rho + ts[1]->tvec().square() * (1.f - rho); // Update square gradient exponential average
+  ts[1]->tvec().device(*dev.edevice) = - ts[1]->tvec() / (ts[2]->tvec() + epsilon).sqrt(); // Divide by the RMS
+  //ts[0]->tvec().device(*dev.edevice) += eta * ts[1]->tvec() / model->weight_decay.current_weight_decay(); // Apply weight decay (should we do this?)
+  // --------------------------
+  
 /*
   //------------------------------------------------------------------
   // METHOD 1: naive implementation (slow?)
-  std::vector<real> v_params = dynet::as_vector(*ts[0]);// FIXME: not a smart way but it works on both GPU and CPU!
-  std::vector<real> v_grads = dynet::as_vector(*ts[2]);// gradients with momentum
+  std::vector<real> v_params = dynet::as_vector(*ts[0]);
+  //std::vector<real> v_grads = dynet::as_vector(*ts[1]);
+  std::vector<real> v_m1 = dynet::as_vector(*ts[2]);// for RMSProp step
+  std::vector<real> v_m2 = dynet::as_vector(*ts[3]);// for RMSProp step
+
   Eigen::TensorMap<Eigen::Tensor<real,1>> t_params(&v_params[0], v_params.size());
-  Eigen::TensorMap<Eigen::Tensor<real,1>> t_grads(&v_grads[0], v_grads.size());
-  Eigen::Tensor<real,1> v = t_params.log() + t_grads / model->weight_decay.current_weight_decay();// with momentum
+  //Eigen::TensorMap<Eigen::Tensor<real,1>> t_grads(&v_grads[0], v_grads.size());
+  Eigen::TensorMap<Eigen::Tensor<real,1>> t_m1(&v_m1[0], v_m1.size());// for RMSProp step
+  Eigen::TensorMap<Eigen::Tensor<real,1>> t_m2(&v_m2[0], v_m2.size());// for RMSProp step
+  Eigen::Tensor<real,1> v = t_params.log() - t_m1 / (t_m2.sqrt() + eps) * lr_t;// for RMSProp step
   
-  Eigen::Tensor<float,0> m = v.maximum();// max
+  Eigen::Tensor<float,0> m = v.maximum() ;// max
   Eigen::Tensor<float,0> z = m.coeff() + (v - m.coeff()).exp().sum().log();// Z
   Eigen::Tensor<float,1> u = (v - z.coeff()).exp();// result
-  TensorTools::set_elements(*ts[0], u.data(), u.dimensions()[0]);// for both GPU and CPU
-  //------------------------------------------------------------------
+  TensorTools::set_elements(*ts[0], u.data(), u.dimensions()[0]);
+  //------------------------------------------------------------------   
 */
 
   //------------------------------------------------------------------
   // METHOD 2: advanced implementation (supposedly faster?)
-  ts[0]->tvec().device(*dev.edevice) = ts[0]->tvec().log() + ts[2]->tvec() / model->weight_decay.current_weight_decay();// with momentum
+  ts[0]->tvec().device(*dev.edevice) = ts[0]->tvec().log() + eta * ts[1]->tvec() / model->weight_decay.current_weight_decay(); // RMSProp update
 
   logsumexp(dev, *ts[0], *ts[3], *ts[4]);// z refers to logZ
   //cerr << "max_element=" << as_scalar(m) << endl;
@@ -480,24 +553,86 @@ void EGTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, c
   ts[0]->tvec().device(*dev.edevice) = (ts[0]->tvec() - as_scalar(*ts[4])).exp();// FIXME: other way(s) of not using as_scalar(z)?
   //------------------------------------------------------------------
 }
-DYNET_TRAINER_INST_DEV_IMPL(EGTrainer)
+DYNET_TRAINER_INST_DEV_IMPL(RMSPropEGTrainer)
 
 #ifndef __CUDACC__
-void EGTrainer::update_params(real scale, real gscale, size_t idx) {
+void RMSPropEGTrainer::update_params(real scale, real gscale, size_t idx) {
   auto & p = model->parameters_list()[idx];
-  update_rule(scale, gscale, {&p->values, &p->g, &hp[idx].h, &meg, &zeg});
+  update_rule(scale, gscale, {&p->values, &p->g, &hmsg[idx].h, &meg, &zeg});
 }
-void EGTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
+void RMSPropEGTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
   auto & p = model->lookup_parameters_list()[idx];
-  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &hlp[idx].h[lidx], &meg, &zeg});
+  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &hlmsg[idx].h[lidx], &meg, &zeg});
 }
-void EGTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
+void RMSPropEGTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
   auto & p = model->lookup_parameters_list()[idx];
-  update_rule(scale, gscale, {&p->all_grads, &p->all_grads, &hlp[idx].all_h, &meg, &zeg});
+  update_rule(scale, gscale, {&p->all_values, &p->all_grads, &hlmsg[idx].all_h, &meg, &zeg});
 }
-void EGTrainer::alloc_impl() {
-  hp = allocate_shadow_parameters(*model);
-  hlp = allocate_shadow_lookup_parameters(*model); 
+void RMSPropEGTrainer::alloc_impl() {
+  hmsg = allocate_shadow_parameters(*model);
+  hlmsg = allocate_shadow_lookup_parameters(*model);
+}
+#endif
+
+// --- SGLDTrainer
+
+// Perform update of ts[0]=parameters, ts[1]=gradients
+template <class MyDevice>
+void SGLDTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
+  //------------------------------------------------------------------
+  // Initialize white Gaussian noise using stddev as given noise_eta
+  TensorTools::randomize_normal(*ts[2], 0, eta);
+
+  ts[0]->tvec().device(*dev.edevice) += ts[1]->tvec() * (0.5f * eta * scale * gscale / model->weight_decay.current_weight_decay()) + ts[2]->tvec();// FIXME: requires weight_decay? gscale?
+}
+DYNET_TRAINER_INST_DEV_IMPL(SGLDTrainer)
+
+#ifndef __CUDACC__
+void SGLDTrainer::update_params(real scale, real gscale, size_t idx) {
+  auto & p = model->parameters_list()[idx];
+  update_rule(scale, gscale, {&p->values, &p->g, &np[idx].h});
+}
+void SGLDTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
+  auto & p = model->lookup_parameters_list()[idx];
+  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &nlp[idx].h[lidx]});
+}
+void SGLDTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
+  auto & p = model->lookup_parameters_list()[idx];
+  update_rule(scale, gscale, {&p->all_values, &p->all_grads, &nlp[idx].all_h});
+}
+void SGLDTrainer::alloc_impl() {
+  np = allocate_shadow_parameters(*model);
+  nlp = allocate_shadow_lookup_parameters(*model); 
+}
+#endif
+
+// --- pSGLDTrainer
+// Perform update of ts[0]=parameters, ts[1]=gradients
+template <class MyDevice>
+void pSGLDTrainer::update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & ts) {
+  ts[1]->tvec().device(*dev.edevice) = ts[1]->tvec() * (scale * gscale); // Scale gradient
+  ts[2]->tvec().device(*dev.edevice) = ts[2]->tvec() * rho + ts[1]->tvec().square() * (1.f - rho); // Update square gradient exponential average
+  ts[1]->tvec().device(*dev.edevice) = - ts[1]->tvec() / (ts[2]->tvec() + epsilon).sqrt(); // Divide by the RMS
+  ts[0]->tvec().device(*dev.edevice) += eta * ts[1]->tvec() / model->weight_decay.current_weight_decay(); // Apply weight decay (should we do this?)
+}
+DYNET_TRAINER_INST_DEV_IMPL(pSGLDTrainer)
+
+#ifndef __CUDACC__
+void pSGLDTrainer::update_params(real scale, real gscale, size_t idx) {
+  auto & p = model->parameters_list()[idx];
+  update_rule(scale, gscale, {&p->values, &p->g, &hmsg[idx].h});
+}
+void pSGLDTrainer::update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) {
+  auto & p = model->lookup_parameters_list()[idx];
+  update_rule(scale, gscale, {&p->values[lidx], &p->grads[lidx], &hlmsg[idx].h[lidx]});
+}
+void pSGLDTrainer::update_lookup_params(real scale, real gscale, size_t idx) {
+  auto & p = model->lookup_parameters_list()[idx];
+  update_rule(scale, gscale, {&p->all_values, &p->all_grads, &hlmsg[idx].all_h});
+}
+void pSGLDTrainer::alloc_impl() {
+  hmsg = allocate_shadow_parameters(*model);
+  hlmsg = allocate_shadow_lookup_parameters(*model);
 }
 #endif
 
@@ -535,11 +670,24 @@ DYNET_SERIALIZE_IMPL(RMSPropTrainer)
 DYNET_SERIALIZE_COMMIT(AdamTrainer, DYNET_SERIALIZE_DERIVED_DEFINE(Trainer, beta_1, beta_2, epsilon, m, lm, v, lv))
 DYNET_SERIALIZE_IMPL(AdamTrainer)
 
-DYNET_SERIALIZE_COMMIT(AdaptiveEGTrainer, DYNET_SERIALIZE_DERIVED_DEFINE(Trainer, m, lm, v, lv))
-DYNET_SERIALIZE_IMPL(AdaptiveEGTrainer)
+//---
+DYNET_SERIALIZE_COMMIT(SGLDTrainer, DYNET_SERIALIZE_DERIVED_EQ_DEFINE(Trainer))
+DYNET_SERIALIZE_IMPL(SGLDTrainer)
 
-DYNET_SERIALIZE_COMMIT(EGTrainer, DYNET_SERIALIZE_DERIVED_DEFINE(Trainer, momentum, hp, hlp))
+DYNET_SERIALIZE_COMMIT(pSGLDTrainer, DYNET_SERIALIZE_DERIVED_DEFINE(Trainer, epsilon, rho, hmsg, hlmsg))
+DYNET_SERIALIZE_IMPL(pSGLDTrainer)
+//---
+
+//---
+DYNET_SERIALIZE_COMMIT(EGTrainer, DYNET_SERIALIZE_DERIVED_DEFINE(Trainer, momentum, noise_eta, hp, hlp))
 DYNET_SERIALIZE_IMPL(EGTrainer)
+
+DYNET_SERIALIZE_COMMIT(AdamEGTrainer, DYNET_SERIALIZE_DERIVED_DEFINE(Trainer, beta_1, beta_2, epsilon, m, lm, v, lv))
+DYNET_SERIALIZE_IMPL(AdamEGTrainer)
+
+DYNET_SERIALIZE_COMMIT(RMSPropEGTrainer, DYNET_SERIALIZE_DERIVED_DEFINE(Trainer, epsilon, rho, hmsg, hlmsg))
+DYNET_SERIALIZE_IMPL(RMSPropEGTrainer)
+//---
 
 #endif
 
@@ -553,6 +701,12 @@ BOOST_CLASS_EXPORT_IMPLEMENT(dynet::AdagradTrainer)
 BOOST_CLASS_EXPORT_IMPLEMENT(dynet::AdadeltaTrainer)
 BOOST_CLASS_EXPORT_IMPLEMENT(dynet::RMSPropTrainer)
 BOOST_CLASS_EXPORT_IMPLEMENT(dynet::AdamTrainer)
+//---
+BOOST_CLASS_EXPORT_IMPLEMENT(dynet::SGLDTrainer)
+BOOST_CLASS_EXPORT_IMPLEMENT(dynet::pSGLDTrainer)
+//---
 BOOST_CLASS_EXPORT_IMPLEMENT(dynet::EGTrainer)
-BOOST_CLASS_EXPORT_IMPLEMENT(dynet::AdaptiveEGTrainer)
+BOOST_CLASS_EXPORT_IMPLEMENT(dynet::AdamEGTrainer)
+BOOST_CLASS_EXPORT_IMPLEMENT(dynet::RMSPropEGTrainer)
+//---
 #endif
