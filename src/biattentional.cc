@@ -119,8 +119,8 @@ int main(int argc, char** argv) {
 		return main_body<LSTMBuilder>(vm);
 	else if (vm.count("vlstm"))
 		return main_body<VanillaLSTMBuilder>(vm);
-	//else if (vm.count("dglstm"))
-	//	return main_body<DGLSTMBuilder>(vm);
+	else if (vm.count("dglstm"))
+		return main_body<DGLSTMBuilder>(vm);
 	else if (vm.count("gru"))
 		return main_body<GRUBuilder>(vm);
 	else

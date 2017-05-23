@@ -18,6 +18,7 @@ set(dynet_library_SRCS
     hsm-builder.cc
     init.cc
     lstm.cc
+    dglstm.cc
     mem.cc
     model.cc
     mp.cc
@@ -61,6 +62,7 @@ set(dynet_library_HDRS
     hsm-builder.h
     init.h
     lstm.h
+    dglstm.h
     mem.h
     model.h
     mp.h

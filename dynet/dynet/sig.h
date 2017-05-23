@@ -106,7 +106,7 @@ template <class Sig>
 struct SigLinearMap {
   SigLinearMap() { sigs.reserve(50); whiches.reserve(50); Sig s; sigs.push_back(s); whiches.push_back(s.which); }
   int get_idx(Sig &s) {
-    for (int i=0; i<sigs.size(); ++i) {
+    for (unsigned i=0; i<sigs.size(); ++i) {
       if (sigs[i]==s)
           return i;
     }
@@ -132,7 +132,7 @@ struct SigLinearSortedMap {
       }
       // not found, continue to add.
     } else { // linear scan
-      for (int i=0; i<sigs.size(); ++i) {
+      for (unsigned i=0; i<sigs.size(); ++i) {
         if (sigs[i].first==s) {
           const int res=sigs[i].second;
           found++;

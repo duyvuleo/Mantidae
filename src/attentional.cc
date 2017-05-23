@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
 		("gru", "use Gated Recurrent Unit (GRU) for recurrent structure; default RNN")
 		("lstm", "use Long Short Term Memory (LSTM) for recurrent structure; default RNN")
 		("vlstm", "use Vanilla Long Short Term Memory (VLSTM) for recurrent structure; default RNN")
-		("dglstm", "use Depth-Gated Long Short Term Memory (DGLSTM) (Kaisheng et al., 2015; https://arxiv.org/abs/1508.03790) for recurrent structure; default RNN") // FIXME: add this to dynet?
+		("dglstm", "use Depth-Gated Long Short Term Memory (DGLSTM) (Kaisheng et al., 2015; https://arxiv.org/abs/1508.03790) for recurrent structure; default RNN")
 		//-----------------------------------------
 		("bidirectional", "use bidirectional recurrent hidden states as source embeddings, rather than word embeddings")
 		//-----------------------------------------
@@ -205,8 +205,8 @@ int main(int argc, char** argv) {
 		return main_body<LSTMBuilder>(vm);
 	else if (vm.count("vlstm"))
 		return main_body<VanillaLSTMBuilder>(vm);
-	//else if (vm.count("dglstm"))
-		//return main_body<DGLSTMBuilder>(vm);
+	else if (vm.count("dglstm"))
+		return main_body<DGLSTMBuilder>(vm);
 	else if (vm.count("gru"))
 		return main_body<GRUBuilder>(vm);
 	else
