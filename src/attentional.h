@@ -1333,12 +1333,12 @@ Expression AttentionalModel<Builder>::BuildRelOptGraph(
 		if (fertility != nullptr) {
 			assert(global_fertility);
 
-			Expression fbias = concatenate_cols(std::vector<Expression>(slen, parameter(cg, p_bfhid)));
-			Expression mbias = concatenate(std::vector<Expression>(slen, parameter(cg, p_bfmu)));
-			Expression vbias = concatenate(std::vector<Expression>(slen, parameter(cg, p_bfvar)));
-			Expression fhid = tanh(transpose(fbias + parameter(cg, p_Wfhid) * src));  
-			Expression mu = mbias + fhid * parameter(cg, p_Wfmu);
-			Expression var = exp(vbias + fhid * parameter(cg, p_Wfvar));
+			Expression fbias = concatenate_cols(std::vector<Expression>(slen, const_parameter(cg, p_bfhid)));
+			Expression mbias = concatenate(std::vector<Expression>(slen, const_parameter(cg, p_bfmu)));
+			Expression vbias = concatenate(std::vector<Expression>(slen, const_parameter(cg, p_bfvar)));
+			Expression fhid = tanh(transpose(fbias + const_parameter(cg, p_Wfhid) * src));  
+			Expression mu = mbias + fhid * const_parameter(cg, p_Wfmu);
+			Expression var = exp(vbias + fhid * const_parameter(cg, p_Wfvar));
 
 			Expression mu_trim = pickrange(mu, 1, slen-1);
 			Expression var_trim = pickrange(var, 1, slen-1);
@@ -1394,7 +1394,7 @@ Expression AttentionalModel<Builder>::BuildRelOptGraph(
 	// collect expected word embeddings
 	//cerr << "BuildRelOptGraph::(1)" << endl;
 	std::vector<Expression> i_wes(tlen+1);
-	i_wes[0] = concatenate_to_batch(std::vector<Expression>(v_params.size(), lookup(cg, p_ct, ind_bos)));// known BOS embedding (batched)
+	i_wes[0] = concatenate_to_batch(std::vector<Expression>(v_params.size(), const_lookup(cg, p_ct, ind_bos)));// known BOS embedding (batched)
 	//cerr << "BuildRelOptGraph::(1a)" << endl;
 	for(auto t : boost::irange(0, tlen)){
 		//cerr << "t=" << t << endl;
@@ -1501,12 +1501,12 @@ Expression AttentionalModel<Builder>::BuildRelOptGraph(
 		if (fertility != nullptr) {
 			assert(global_fertility);
 
-			Expression fbias = concatenate_cols(std::vector<Expression>(slen, parameter(cg, p_bfhid)));
-			Expression mbias = concatenate(std::vector<Expression>(slen, parameter(cg, p_bfmu)));
-			Expression vbias = concatenate(std::vector<Expression>(slen, parameter(cg, p_bfvar)));
-			Expression fhid = tanh(transpose(fbias + parameter(cg, p_Wfhid) * src));  
-			Expression mu = mbias + fhid * parameter(cg, p_Wfmu);
-			Expression var = exp(vbias + fhid * parameter(cg, p_Wfvar));
+			Expression fbias = concatenate_cols(std::vector<Expression>(slen, const_parameter(cg, p_bfhid)));
+			Expression mbias = concatenate(std::vector<Expression>(slen, const_parameter(cg, p_bfmu)));
+			Expression vbias = concatenate(std::vector<Expression>(slen, const_parameter(cg, p_bfvar)));
+			Expression fhid = tanh(transpose(fbias + const_parameter(cg, p_Wfhid) * src));  
+			Expression mu = mbias + fhid * const_parameter(cg, p_Wfmu);
+			Expression var = exp(vbias + fhid * const_parameter(cg, p_Wfvar));
 
 			Expression mu_trim = pickrange(mu, 1, slen-1);
 			Expression var_trim = pickrange(var, 1, slen-1);
@@ -1567,7 +1567,7 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 		else
 			assert("Unknown relopt algo! Failed!");		
 	}
-	exp_wrd_embeddings.push_back(lookup(cg, p_cs, sd.convert("</s>")));// EOS
+	exp_wrd_embeddings.push_back(const_lookup(cg, p_cs, sd.convert("</s>")));// EOS
 
 	slen = exp_wrd_embeddings.size();//v_params.size() + 2/*BOS and EOS*/; 
 	std::vector<Expression> source_embeddings;
@@ -1580,13 +1580,13 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 		// and stack the top-level hidden states from each model as 
 		// the representation at each position
 		std::vector<Expression> src_fwd(slen);
-		builder_src_fwd.new_graph(cg);
+		builder_src_fwd.new_graph(cg, false);// now fixed parameters
 		builder_src_fwd.start_new_sequence();
 		for (unsigned i = 0; i < slen; ++i) 
 			src_fwd[i] = builder_src_fwd.add_input(exp_wrd_embeddings[i]);
 
 		std::vector<Expression> src_bwd(slen);
-		builder_src_bwd.new_graph(cg);
+		builder_src_bwd.new_graph(cg, false);// now fixed parameters
 		builder_src_bwd.start_new_sequence();
 		for (int i = slen-1; i >= 0; --i) {
 			// offset by one position to the right, to catch </s> and generally
@@ -1600,20 +1600,20 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 	src = concatenate_cols(source_embeddings); 
 
 	// now for the target sentence
-	i_R = parameter(cg, p_R); // hidden -> word rep parameter
-	i_Q = parameter(cg, p_Q);
-	i_P = parameter(cg, p_P);
-	i_bias = parameter(cg, p_bias);  // word bias
-	i_Wa = parameter(cg, p_Wa); 
-	i_Ua = parameter(cg, p_Ua);
-	i_va = parameter(cg, p_va);
+	i_R = const_parameter(cg, p_R); // hidden -> word rep parameter
+	i_Q = const_parameter(cg, p_Q);
+	i_P = const_parameter(cg, p_P);
+	i_bias = const_parameter(cg, p_bias);  // word bias
+	i_Wa = const_parameter(cg, p_Wa); 
+	i_Ua = const_parameter(cg, p_Ua);
+	i_va = const_parameter(cg, p_va);
 	i_uax = i_Ua * src; 
 
 	// reset aux_vecs counter, allowing the memory to be reused
 	num_aux_vecs = 0;
 
 	if (giza_fertility || giza_markov || giza_positional) {
-	i_Ta = parameter(cg, p_Ta);   
+		i_Ta = const_parameter(cg, p_Ta);   
 		if (giza_positional) {
 			i_src_idx = arange(cg, 0, slen, true, auxiliary_vector());
 			i_src_len = repeat(cg, slen, std::log(1.0 + slen), auxiliary_vector());
@@ -1630,14 +1630,14 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 
 	int hidden_layers = builder.num_h0_components();
 	for (int l = 0; l < hidden_layers; ++l) {
-		Expression i_Wh0 = parameter(cg, p_Wh0[l]);
+		Expression i_Wh0 = const_parameter(cg, p_Wh0[l]);
 		h0.push_back(tanh(i_Wh0 * i_src));
 	}
 
-	builder.new_graph(cg); 
+	builder.new_graph(cg, false);// now fixed parameters
 	builder.start_new_sequence(h0);
 #else
-	builder.new_graph(cg); 
+	builder.new_graph(cg, false);// now fixed parameters 
 	builder.start_new_sequence();
 #endif
 }
@@ -1649,7 +1649,7 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 	, ComputationGraph &cg)
 {
 	std::vector<Expression> exp_wrd_embeddings;
-	exp_wrd_embeddings.push_back(concatenate_to_batch(std::vector<Expression>(v_params.size(), lookup(cg, p_cs, sd.convert("<s>")))));// BOS
+	exp_wrd_embeddings.push_back(concatenate_to_batch(std::vector<Expression>(v_params.size(), const_lookup(cg, p_cs, sd.convert("<s>")))));// BOS
 	for(auto t : boost::irange(0, (int)v_params[0].size())){		
 		std::vector<Expression> v_ps;
 		for (unsigned bs = 0; bs < v_params.size(); bs++){
@@ -1670,7 +1670,7 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 		}
 		exp_wrd_embeddings.push_back(concatenate_to_batch(v_ps));
 	}
-	exp_wrd_embeddings.push_back(concatenate_to_batch(std::vector<Expression>(v_params.size(), lookup(cg, p_cs, sd.convert("</s>")))));// EOS
+	exp_wrd_embeddings.push_back(concatenate_to_batch(std::vector<Expression>(v_params.size(), const_lookup(cg, p_cs, sd.convert("</s>")))));// EOS
 
 	slen = exp_wrd_embeddings.size();//v_params.size() + 2/*BOS and EOS*/; 
 	std::vector<Expression> source_embeddings;
@@ -1683,13 +1683,13 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 		// and stack the top-level hidden states from each model as 
 		// the representation at each position
 		std::vector<Expression> src_fwd(slen);
-		builder_src_fwd.new_graph(cg);
+		builder_src_fwd.new_graph(cg, false);// now fixed parameters
 		builder_src_fwd.start_new_sequence();
 		for (unsigned i = 0; i < slen; ++i) 
 			src_fwd[i] = builder_src_fwd.add_input(exp_wrd_embeddings[i]);
 
 		std::vector<Expression> src_bwd(slen);
-		builder_src_bwd.new_graph(cg);
+		builder_src_bwd.new_graph(cg, false);// now fixed parameters
 		builder_src_bwd.start_new_sequence();
 		for (int i = slen-1; i >= 0; --i) {
 			// offset by one position to the right, to catch </s> and generally
@@ -1703,20 +1703,20 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 	src = concatenate_cols(source_embeddings); 
 
 	// now for the target sentence
-	i_R = parameter(cg, p_R); // hidden -> word rep parameter
-	i_Q = parameter(cg, p_Q);
-	i_P = parameter(cg, p_P);
-	i_bias = parameter(cg, p_bias);  // word bias
-	i_Wa = parameter(cg, p_Wa); 
-	i_Ua = parameter(cg, p_Ua);
-	i_va = parameter(cg, p_va);
+	i_R = const_parameter(cg, p_R); // hidden -> word rep parameter
+	i_Q = const_parameter(cg, p_Q);
+	i_P = const_parameter(cg, p_P);
+	i_bias = const_parameter(cg, p_bias);  // word bias
+	i_Wa = const_parameter(cg, p_Wa); 
+	i_Ua = const_parameter(cg, p_Ua);
+	i_va = const_parameter(cg, p_va);
 	i_uax = i_Ua * src; 
 
 	// reset aux_vecs counter, allowing the memory to be reused
 	num_aux_vecs = 0;
 
 	if (giza_fertility || giza_markov || giza_positional) {
-	i_Ta = parameter(cg, p_Ta);   
+		i_Ta = const_parameter(cg, p_Ta);   
 		if (giza_positional) {
 			i_src_idx = arange(cg, 0, slen, true, auxiliary_vector());
 			i_src_len = repeat(cg, slen, std::log(1.0 + slen), auxiliary_vector());
@@ -1733,14 +1733,14 @@ void AttentionalModel<Builder>::StartNewInstance(size_t algo
 
 	int hidden_layers = builder.num_h0_components();
 	for (int l = 0; l < hidden_layers; ++l) {
-		Expression i_Wh0 = parameter(cg, p_Wh0[l]);
+		Expression i_Wh0 = const_parameter(cg, p_Wh0[l]);
 		h0.push_back(tanh(i_Wh0 * i_src));
 	}
 
-	builder.new_graph(cg); 
+	builder.new_graph(cg, false);// now fixed parameters 
 	builder.start_new_sequence(h0);
 #else
-	builder.new_graph(cg); 
+	builder.new_graph(cg, false);// now fixed parameters
 	builder.start_new_sequence();
 #endif
 }

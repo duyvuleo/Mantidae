@@ -323,7 +323,7 @@ void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
 		Expression i_loss = i_loss_s2t + i_loss_t2s;
 
 		// execute forward step
-		cg.incremental_forward(i_loss);
+		cg.incremental_forward(i_loss);		
 		
 		// execute backward step (including computation of derivatives)
 		cg.backward(i_loss);

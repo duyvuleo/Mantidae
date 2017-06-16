@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
 		("slen_limit", value<unsigned>()->default_value(0), "limit the sentence length (either source or target); no by default")
 		//-----------------------------------------
 		("rescore,r", "rescore (source, target) pairs in testing, default: translate source only")
-		("beam,b", value<unsigned>()->default_value(0), "size of beam in decoding; 0=greedy")
+		("beam,b", value<unsigned>()->default_value(1), "size of beam in decoding; 1: greedy")
 		("nbest_size", value<unsigned>()->default_value(1), "nbest size of translation generation/decoding; 1 by default")
 		("print_nbest_scores", "print nbest translations with their scores; no by default")
 		("kbest,K", value<string>(), "test on kbest inputs using monolingual Markov model")
@@ -554,7 +554,7 @@ void Test_Decode(Model &model, std::vector<std::shared_ptr<AM_t>>& ams, string t
 				//str_trg = Convert2iStr(*vocab_trg, sent_trg, false);
 				//MapWords(str_src, sent_trg, align, mapping, str_trg);
 			}
-		}
+		}		
 
 		if (r2l_target)
 			std::reverse(target.begin() + 1, target.end() - 1);
