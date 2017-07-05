@@ -406,6 +406,7 @@ int main_body(variables_map vm)
 		cerr << "Decoded " << line_count << " sentences, completed in " << elapsed/1000 << "(s)" << endl;
 		if (timing){
 			cerr << "Decoding time info: " << endl;
+			cerr << "Number of iterations=" << dti.iterations << endl;
 			cerr << "Elapsed Forward=" << dti.elapsed_fwd/1000 << "(s)" << endl;
 			cerr << "Elapsed Backward=" << dti.elapsed_bwd/1000 << "(s)" << endl;
 			cerr << "Elapsed Update=" << dti.elapsed_upd/1000 << "(s)" << endl;
