@@ -222,6 +222,8 @@ void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
 	// set up monolingual data
 	vector<unsigned> orders_s(mono_cor_s.size());// IDs from mono_cor_s
 	vector<unsigned> orders_t(mono_cor_t.size());// IDs from mono_cor_t
+	std::iota(orders_s.begin(), orders_s.end(), 0);
+	std::iota(orders_t.begin(), orders_t.end(), 0);
 	shuffle(orders_s.begin(), orders_s.end(), *rndeng);// to make it random
 	shuffle(orders_t.begin(), orders_t.end(), *rndeng);
 	
@@ -323,7 +325,7 @@ void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
 		Expression i_loss = i_loss_s2t + i_loss_t2s;
 
 		// execute forward step
-		cg.incremental_forward(i_loss);
+		cg.incremental_forward(i_loss);		
 		
 		// execute backward step (including computation of derivatives)
 		cg.backward(i_loss);
