@@ -18,7 +18,8 @@ Expression arange(ComputationGraph &cg, unsigned begin, unsigned end, bool log_t
 	aux_mem->clear();
 	for (unsigned i = begin; i < end; ++i) 
 		aux_mem->push_back((log_transform) ? log(1.0 + i) : i);
-	return Expression(&cg, cg.add_input(Dim({end-begin}), aux_mem));
+	//return Expression(&cg, cg.add_input(Dim({end-begin}), aux_mem));
+	return input(cg, Dim({end-begin}), aux_mem, dynet::default_device);// dynet v2
 }
 
 // Chris -- this should be a library function
@@ -26,7 +27,8 @@ Expression repeat(ComputationGraph &cg, unsigned num, float value, std::vector<f
 {
 	aux_mem->clear();
 	aux_mem->resize(num, value);
-	return Expression(&cg, cg.add_input(Dim({num}), aux_mem));
+	//return Expression(&cg, cg.add_input(Dim({num}), aux_mem));
+	return input(cg, Dim({num}), aux_mem, dynet::default_device);// dynet v2
 }
 
 // Chris -- this should be a library function
@@ -35,7 +37,8 @@ Expression dither(ComputationGraph &cg, const Expression &expr, float pad_value,
 	const auto& shape = cg.nodes[expr.i]->dim;
 	aux_mem->clear();
 	aux_mem->resize(shape.cols(), pad_value);
-	Expression padding(&cg, cg.add_input(Dim({shape.cols()}), aux_mem));
+	//Expression padding(&cg, cg.add_input(Dim({shape.cols()}), aux_mem));
+	Expression padding = input(cg, Dim({shape.cols()}), aux_mem, dynet::default_device);// dynet v2
 	Expression padded = concatenate(std::vector<Expression>({padding, expr, padding}));
 	Expression left_shift = pickrange(padded, 2, shape.rows()+2);
 	Expression right_shift = pickrange(padded, 0, shape.rows());

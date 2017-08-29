@@ -22,7 +22,7 @@ void InternalMemoryPool::sys_alloc(size_t cap) {
   used = 0;
 }
 
-AlignedMemoryPool::AlignedMemoryPool(const std::string &name, size_t cap, MemAllocator *a) : name(name), current(0), cap(cap), a(a) {
+AlignedMemoryPool::AlignedMemoryPool(const std::string &name, size_t initial_cap, MemAllocator *a, size_t expanding_unit) : name(name), cap(initial_cap), current(0), a(a), expanding_unit(expanding_unit) {
   DYNET_ASSERT(cap > 0, "Attempt to allocate memory of size 0 in AlignedMemoryPool");
   pools.push_back(new InternalMemoryPool(name, cap, a));
 }
@@ -33,8 +33,10 @@ AlignedMemoryPool::~AlignedMemoryPool() {
 void* AlignedMemoryPool::allocate(size_t n) {
   void *res = pools[current]->allocate(n);
   if (res == 0) {
-    // round up to the nearest multiple of cap
-    pools.push_back(new InternalMemoryPool(name, ((n+cap-1)/cap)*cap, a));
+    // round up to the nearest multiple of expanding_unit
+    size_t new_pool_size  = (n + expanding_unit-1) / expanding_unit * expanding_unit;
+    pools.push_back(new InternalMemoryPool(name, new_pool_size, a));
+    cap += new_pool_size;
     current++;
     res = pools[current]->allocate(n);
   }
@@ -45,8 +47,7 @@ void AlignedMemoryPool::free() {
   if (current > 0) {
     for (auto p : pools) { delete p; }
     pools.clear();
-    pools.push_back(new InternalMemoryPool(name, cap * (current+1), a));
-    cap = cap * (current + 1);
+    pools.push_back(new InternalMemoryPool(name, cap, a));
     current = 0;
   }
   pools[0]->free();
@@ -67,7 +68,7 @@ size_t AlignedMemoryPool::used() {
 
 void AlignedMemoryPool::set_used(size_t s) {
   if(s != pools.back()->used) {
-    DYNET_ARG_CHECK(pools.size() == 1, "Dynet does not support both dynamic increasing of memory pool size, and checkpointing functionality in AlignedMemoryPool. If you want to use checkpointing, please pre-allocate enough memory using the --dynet-mem command line option.");
+    DYNET_ARG_CHECK(pools.size() == 1, "Dynet does not support both dynamic increasing of memory pool size, and automatic batching or memory checkpointing. If you want to use automatic batching or checkpointing, please pre-allocate enough memory using the --dynet-mem command line option (details http://dynet.readthedocs.io/en/latest/commandline.html).");
     pools[0]->used = s;
   }
   // TODO: This is disabled for now, because it would require freeing all the memory pools to do properly

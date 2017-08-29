@@ -4,8 +4,6 @@
 #include <fstream>
 #include <sstream>
 
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/variables_map.hpp>
 
@@ -22,7 +20,7 @@ namespace dynet {
 
 template <class Builder>
 struct BiAttentionalModel {
-	explicit BiAttentionalModel(Model *model, bool _rnn_src_embeddings, bool _giza_positional, 
+	explicit BiAttentionalModel(ParameterCollection *model, bool _rnn_src_embeddings, bool _giza_positional, 
 		bool _giza_markov, bool _giza_fertility, bool _doc_context,
 		bool _global_fertility, double trace_weight, bool _shared_embeddings=false) 
 		: s2t_model(model, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE, SLAYERS, TLAYERS,
@@ -54,7 +52,7 @@ struct BiAttentionalModel {
 	Expression s2t_align, t2s_align;
 	Expression s2t_xent, t2s_xent, trace_bonus;
 
-	void Add_Global_Fertility_Params(dynet::Model* model)
+	void Add_Global_Fertility_Params(ParameterCollection* model)
 	{
 		s2t_model.Add_Global_Fertility_Params(model, HIDDEN_DIM, rnn_src_embeddings);
 		t2s_model.Add_Global_Fertility_Params(model, HIDDEN_DIM, rnn_src_embeddings);
@@ -77,16 +75,16 @@ struct BiAttentionalModel {
 		//return src_xent + tgt_xent;
 	}
 
-	void Load(const std::string &model_file, Model &model){
+	void Load(const std::string &model_file, ParameterCollection &model){
 		cerr << "Initialising bi-model parameters from file: " << model_file << endl;
 		dynet::load_dynet_model(model_file, &model);// FIXME: use binary streaming instead for saving disk spaces
 	}
 
-	void Initialise(const std::string &src_file, const std::string &tgt_file, Model &model)
+	void Initialise(const std::string &src_file, const std::string &tgt_file, ParameterCollection &model)
 	{
 		if (shared_embeddings) assert("embedding_shared parameter is not correct! Initialisation only supports loading two separate pre-trained models.");	
 
-		Model sm, tm;
+		ParameterCollection sm, tm;
 		AttentionalModel<Builder> smb(&sm, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE, 
 			SLAYERS, TLAYERS, HIDDEN_DIM, ALIGN_DIM, rnn_src_embeddings, giza_positional, giza_markov, giza_fertility, doc_context, global_fertility);
 		AttentionalModel<Builder> tmb(&tm, TGT_VOCAB_SIZE, SRC_VOCAB_SIZE,
@@ -98,18 +96,10 @@ struct BiAttentionalModel {
 			//std::cerr << "\tparam size: " << p->values.d << std::endl;
 
 		std::cerr << "... loading " << src_file << " ..." << std::endl;
-		{
-			ifstream in(src_file);
-			boost::archive::text_iarchive ia(in);
-			ia >> sm;
-		}
+		dynet::load_dynet_model(src_file, &sm);
 
 		std::cerr << "... loading " << tgt_file << " ... ";
-		{
-			ifstream in(tgt_file);
-			boost::archive::text_iarchive ia(in);
-			ia >> tm;
-		}
+		dynet::load_dynet_model(tgt_file, &tm);
 		
 		std::cerr << " done!" << endl;
 		std::cerr << "... merging parameters ..." << std::endl;

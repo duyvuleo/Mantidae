@@ -1,15 +1,14 @@
 #include "dynet/dglstm.h"
 
+#include "dynet/param-init.h"
+
 #include <fstream>
 #include <string>
 #include <cassert>
 #include <vector>
 #include <iostream>
 
-#include "dynet/nodes.h"
-
 using namespace std;
-using namespace dynet::expr;
 
 //#define USE_STANDARD_LSTM_DEFINE 
 /**
@@ -30,44 +29,46 @@ enum { X2I, H2I, C2I, BI,
 DGLSTMBuilder::DGLSTMBuilder(unsigned layers,
              unsigned input_dim,
              unsigned hidden_dim,
-             Model& model) : layers(layers), hid(hidden_dim) {
+             ParameterCollection& model) : layers(layers), hid(hidden_dim) {
   Parameter p_x2k, p_c2k, p_q2k, p_bk, p_x2k0;
   unsigned layer_input_dim = input_dim;
+  local_model = model.add_subcollection("dglstm-builder");
+
   input_dims = vector<unsigned>(layers, layer_input_dim);
-  p_x2k0 = model.add_parameters({ hidden_dim, layer_input_dim });
+  p_x2k0 = local_model.add_parameters({ hidden_dim, layer_input_dim });
   for (unsigned i = 0; i < layers; ++i) {
     input_dims[i] = layer_input_dim;
     // i
-    Parameter p_x2i = model.add_parameters({ hidden_dim, layer_input_dim });
-    Parameter p_h2i = model.add_parameters({ hidden_dim, hidden_dim });
-    Parameter p_c2i = model.add_parameters({ hidden_dim, hidden_dim });
-    Parameter p_bi = model.add_parameters({ hidden_dim });
+    Parameter p_x2i = local_model.add_parameters({ hidden_dim, layer_input_dim });
+    Parameter p_h2i = local_model.add_parameters({ hidden_dim, hidden_dim });
+    Parameter p_c2i = local_model.add_parameters({ hidden_dim, hidden_dim });
+    Parameter p_bi = local_model.add_parameters({ hidden_dim });
 #ifdef USE_STANDARD_LSTM_DEFINE
     // f
-    Parameter p_x2f = model.add_parameters({ hidden_dim, layer_input_dim });
-    Parameter p_h2f = model.add_parameters({ hidden_dim, hidden_dim });
-    Parameter p_c2f = model.add_parameters({ hidden_dim, hidden_dim });
-    Parameter p_bf = model.add_parameters({ hidden_dim });
+    Parameter p_x2f = local_model.add_parameters({ hidden_dim, layer_input_dim });
+    Parameter p_h2f = local_model.add_parameters({ hidden_dim, hidden_dim });
+    Parameter p_c2f = local_model.add_parameters({ hidden_dim, hidden_dim });
+    Parameter p_bf = local_model.add_parameters({ hidden_dim });
 #endif
     // o
-    Parameter p_x2o = model.add_parameters({ hidden_dim, layer_input_dim });
-    Parameter p_h2o = model.add_parameters({ hidden_dim, hidden_dim });
-    Parameter p_c2o = model.add_parameters({ hidden_dim, hidden_dim });
-    Parameter p_bo = model.add_parameters({ hidden_dim });
+    Parameter p_x2o = local_model.add_parameters({ hidden_dim, layer_input_dim });
+    Parameter p_h2o = local_model.add_parameters({ hidden_dim, hidden_dim });
+    Parameter p_c2o = local_model.add_parameters({ hidden_dim, hidden_dim });
+    Parameter p_bo = local_model.add_parameters({ hidden_dim });
 
     // c
-    Parameter p_x2c = model.add_parameters({ hidden_dim, layer_input_dim });
-    Parameter p_h2c = model.add_parameters({ hidden_dim, hidden_dim });
-    Parameter p_bc = model.add_parameters({ hidden_dim });
+    Parameter p_x2c = local_model.add_parameters({ hidden_dim, layer_input_dim });
+    Parameter p_h2c = local_model.add_parameters({ hidden_dim, hidden_dim });
+    Parameter p_bc = local_model.add_parameters({ hidden_dim });
 
-    p_x2k = model.add_parameters({ hidden_dim, layer_input_dim });
-    p_c2k = model.add_parameters({ hidden_dim });
-    p_bk = model.add_parameters({ hidden_dim });
-    p_q2k = model.add_parameters({ hidden_dim });
+    p_x2k = local_model.add_parameters({ hidden_dim, layer_input_dim });
+    p_c2k = local_model.add_parameters({ hidden_dim });
+    p_bk = local_model.add_parameters({ hidden_dim });
+    p_q2k = local_model.add_parameters({ hidden_dim });
 
     layer_input_dim = hidden_dim;  // output (hidden) from 1st layer is input to next
 
-    Parameter p_stab = model.add_parameters({ 1 });
+    Parameter p_stab = local_model.add_parameters({ 1 });
     p_stab.zero();
 
     vector<Parameter> ps;
@@ -359,44 +360,6 @@ void DGLSTMBuilder::copy(const RNNBuilder & rnn) {
         params[i][j] = rnn_dglstm.params[i][j];
 }
 
-void DGLSTMBuilder::save_parameters_pretraining(const string& fname) const {
-  cerr << "Writing DGLSTM parameters to " << fname << endl;
-  ofstream of(fname);
-  assert(of);
-  boost::archive::binary_oarchive oa(of);
-  std::string id = "DGLSTMBuilder:params";
-  oa << id;
-  oa << layers;
-  for (unsigned i = 0; i < layers; ++i) {
-    for (auto p : params[i]) {
-      oa << p.get()->values;
-    }
-  }
-}
-
-void DGLSTMBuilder::load_parameters_pretraining(const string& fname) {
-  cerr << "Loading DGLSTM parameters from " << fname << endl;
-  ifstream of(fname);
-  assert(of);
-  boost::archive::binary_iarchive ia(of);
-  std::string id;
-  ia >> id;
-  if (id != "DGLSTMBuilder:params")
-    DYNET_INVALID_ARG("Bad id read in LSTMBuilder::load_parameters_pretraining. Invalid model format?");
-
-  unsigned l = 0;
-  ia >> l;
-  if (l != layers)
-    DYNET_INVALID_ARG("Bad number of layers in LSTMBuilder::load_parameters_pretraining. Invalid model format?");
-
-  // TODO check other dimensions
-  for (unsigned i = 0; i < layers; ++i) {
-    for (auto p : params[i]) {
-      ia >> p.get()->values;
-    }
-  }
-}
-
 void DGLSTMBuilder::set_dropout(float d) {
   DYNET_ARG_CHECK(d >= 0.f && d <= 1.f,
                           "dropout rate must be a probability (>=0 and <=1)");
@@ -407,10 +370,9 @@ void DGLSTMBuilder::disable_dropout() {
   dropout_rate = 0.f;
 }
 
-DYNET_SERIALIZE_COMMIT(DGLSTMBuilder,
-		       DYNET_SERIALIZE_DERIVED_DEFINE(RNNBuilder, params, layers, dropout_rate),
-		       DYNET_VERSION_SERIALIZE_DEFINE(1, MAX_SERIALIZE_VERSION, input_dims, hid))
+ParameterCollection & DGLSTMBuilder::get_parameter_collection() {
+  return local_model;
+}
 
-DYNET_SERIALIZE_IMPL(DGLSTMBuilder);
 
 } // namespace dynet

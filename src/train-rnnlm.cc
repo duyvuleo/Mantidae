@@ -43,23 +43,20 @@ inline void Create_MiniBatches(const Corpus& traincor, size_t max_size,
 	std::vector<std::vector<Sentence> > & traincor_minibatch);
 
 template <class RNNLM_t>
-void TrainModel(Model &model, RNNLM_t &rnn
+void TrainModel(ParameterCollection &model, RNNLM_t &rnn
 	, Corpus &traincor, Corpus &devcor
+	, unsigned patience, unsigned eta_patience
 	, Trainer* sgd
 	, const string& param_file, float dropout_p);
 template <class RNNLM_t>
-void TrainModel_Batch1(Model &model, RNNLM_t &rnn
+void TrainModel_Batch(ParameterCollection &model, RNNLM_t &rnn
 	, Corpus &traincor, Corpus &devcor
-	, Trainer* sgd
-	, const string& param_file, float dropout_p);
-template <class RNNLM_t>
-void TrainModel_Batch2(Model &model, RNNLM_t &rnn
-	, Corpus &traincor, Corpus &devcor
+	, unsigned patience, unsigned eta_patience
 	, Trainer* sgd
 	, const string& param_file, float dropout_p);
 
 template <class RNNLM_t>
-void TestModel(Model &model, RNNLM_t &rnn
+void TestModel(ParameterCollection &model, RNNLM_t &rnn
 	, const Corpus &testcor);
 
 template <class Builder>
@@ -93,7 +90,6 @@ int main(int argc, char** argv) {
 		("batch_size,b", value<unsigned>()->default_value(BATCH_SIZE), "impose mini-batch size for training")
 		("gru", "use Gated Recurrent Unit (GRU) for recurrent structure; default RNN")
 		("lstm", "use Long Short Term Memory (LSTM) for recurrent structure; default RNN")
-		("vlstm", "use Vanilla Long Short Term Memory (VLSTM) for recurrent structure; default RNN")
 		("dglstm", "use Depth-Gated Long Short Term Memory (DGLSTM) for recurrent structure; default RNN")
 		("dropout", value<float>(), "apply dropout technique (Gal et al., 2015) for RNN")
 		("sgd_trainer", value<unsigned>()->default_value(0), "use specific SGD trainer (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam)")
@@ -104,6 +100,8 @@ int main(int argc, char** argv) {
 		("dreport", value<unsigned>()->default_value(DREPORT), "impose instance reporting value (during training) on development/test sets; default 500")
 		("eta_epoch", value<unsigned>()->default_value(ETA_EPOCH), "limit number of epochs for scheduling the learning rate, e.g., decreasing by a factor of eta_decay; default 4")
 		("max_epoch", value<unsigned>()->default_value(MAX_EPOCH), "limit number of epochs for training; default 20")
+		("patience", value<unsigned>()->default_value(0), "no. of times in which the model has not been improved for early stopping; default none")
+		("eta_patience", value<unsigned>()->default_value(0), "no. of times in which the model has not been improved, e.g., for starting learning rate annealing (e.g., halving)")
 		("lambda", value<dynet::real>()->default_value(1e-6), "the L2 regularization coefficient; default 1e-6.")
 		("eta", value<dynet::real>()->default_value(ETA), "the learning rate of neural network model; default 0.1")
 		("eta_decay", value<dynet::real>()->default_value(ETA_DECAY), "decay value for decreasing the learning rate; default 2.")
@@ -139,8 +137,6 @@ int main(int argc, char** argv) {
 	
 	if (vm.count("lstm"))
 		return main_body<LSTMBuilder>(vm);
-	else if (vm.count("vlstm"))
-		return main_body<VanillaLSTMBuilder>(vm);
 	else if (vm.count("dglstm"))
 		return main_body<DGLSTMBuilder>(vm);
    	else if (vm.count("gru"))
@@ -193,7 +189,7 @@ int main_body(variables_map vm)
 
 	BATCH_SIZE = vm["batch_size"].as<unsigned>();
 		
-	Model model;
+	ParameterCollection model;
 	unsigned sgd_trainer_type = vm["sgd_trainer"].as<unsigned>();
 	Trainer* sgd_trainer = nullptr;
 	if (sgd_trainer_type == 1)
@@ -208,7 +204,6 @@ int main_body(variables_map vm)
 		sgd_trainer = new SimpleSGDTrainer(model, vm["eta"].as<float>());
 	else
 		assert("Unknown SGD trainer type! (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam)");
-	sgd_trainer->eta_decay = ETA_DECAY;
 	sgd_trainer->sparse_updates_enabled = vm["sparse_updates"].as<bool>();
 	if (!sgd_trainer->sparse_updates_enabled)
 		cerr << "Sparse updates for lookup parameter(s) to be disabled!" << endl;
@@ -226,7 +221,12 @@ int main_body(variables_map vm)
 		TestModel(model, lm, testcor);
 	}// otherwise, do training.
 	else
-		TrainModel_Batch2(model, lm, traincor, devcor, sgd_trainer, param_file, dropout_p);
+		TrainModel_Batch(model, lm
+			, traincor, devcor
+			, vm["patience"].as<unsigned>(), vm["eta_patience"].as<unsigned>()
+			, sgd_trainer
+			, param_file
+			, dropout_p);
 	
 	// cleaning up
 	delete sgd_trainer;
@@ -238,7 +238,7 @@ int main_body(variables_map vm)
 //====================================== FUNCTION IMPLEMENTATION ======================================
 
 template <class RNNLM_t>
-void TestModel(Model &model, RNNLM_t &rnn
+void TestModel(ParameterCollection &model, RNNLM_t &rnn
 	, const Corpus &testcor)
 {
 	rnn.DisableDropout();
@@ -269,8 +269,9 @@ void TestModel(Model &model, RNNLM_t &rnn
 }
 
 template <class RNNLM_t>
-void TrainModel(Model &model, RNNLM_t &rnn
+void TrainModel(ParameterCollection &model, RNNLM_t &rnn
 	, Corpus &traincor, Corpus &devcor
+	, unsigned patience, unsigned eta_patience
 	, Trainer* sgd_trainer
 	, const string& param_file, float dropout_p)
 {
@@ -285,11 +286,11 @@ void TrainModel(Model &model, RNNLM_t &rnn
 	shuffle(order.begin(), order.end(), *rndeng);
 
 	unsigned si = 0;//order.size();
-	Timer timer_epoch("completed in"), timer_iteration("completed in");
+	MyTimer timer_epoch("completed in"), timer_iteration("completed in");
 	
 	int report = 0;
-	unsigned lines = 0;
-	while (sgd_trainer->epoch < MAX_EPOCH) {
+	unsigned lines = 0, epoch = 0, cpt = 0/*count of patience*/;
+	while (epoch < MAX_EPOCH) {
 		rnn.EnableDropout(dropout_p);
 
 		double loss = 0;
@@ -297,16 +298,17 @@ void TrainModel(Model &model, RNNLM_t &rnn
 		for (unsigned i = 0; i < report_every_i; ++i, ++si) {
 			if (si == order.size()) {
 				//timing
-				cerr << "***Epoch " << sgd_trainer->epoch << " is finished. ";
+				cerr << "***Epoch " << epoch << " is finished. ";
 				timer_epoch.show();
+
+				epoch++;
 
 				si = 0;
 
-				if (ETA_EPOCH == 0)
-					sgd_trainer->update_epoch(); 
-				else sgd_trainer->update_epoch(1, ETA_EPOCH); // @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
+				if (ETA_EPOCH > 0 && epoch >= ETA_EPOCH)
+					sgd_trainer->learning_rate /= ETA_DECAY;// @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
 
-				if (sgd_trainer->epoch >= MAX_EPOCH) break;
+				if (epoch >= MAX_EPOCH) break;
 
 				cerr << "**SHUFFLE\n";
 				shuffle(order.begin(), order.end(), *rndeng);
@@ -335,7 +337,7 @@ void TrainModel(Model &model, RNNLM_t &rnn
 			lines++;
 		}
 
-		if (sgd_trainer->epoch >= MAX_EPOCH) continue;
+		if (epoch >= MAX_EPOCH) continue;
 	
 		sgd_trainer->status();
 		cerr << "sents=" << lines << " unks=" << unk_tokens << " E=" << (loss / tokens) << " ppl=" << exp(loss / tokens) << ' ';
@@ -365,142 +367,34 @@ void TrainModel(Model &model, RNNLM_t &rnn
 				//boost::archive::text_oarchive oa(out);
 				//oa << lm;
 				rnn.SaveModel(param_file);
+				cpt = 0;
 			}
-			//else
-			//	sgd_trainer->eta *= 0.5;
+			else cpt++;
 		
-			cerr << "\n***DEV [epoch=" << (lines / (double)traincor.size()) << " eta=" << sgd_trainer->eta << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
+			cerr << "\n***DEV [epoch=" << (lines / (double)traincor.size()) << " eta=" << sgd_trainer->learning_rate << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
+
+			if (cpt > 0) cerr << "(not improved, best ppl on dev so far = " << exp(best / dtokens) << ") ";
+
 			timer_iteration.show();
-			timer_iteration.reset();
-		}
-	}	
 
-	cerr << endl << "Training completed!" << endl;
-}
-
-//Note: This version works increasingly worse when batch_size > 16.
-template <class RNNLM_t>
-void TrainModel_Batch1(Model &model, RNNLM_t &rnn
-	, Corpus &traincor, Corpus &devcor
-	, Trainer* sgd_trainer
-	, const string& param_file, float dropout_p)
-{
-	if (BATCH_SIZE == 1){
-		TrainModel(model, rnn, traincor, devcor, sgd_trainer, param_file, dropout_p);
-		return;
-	}		
-
-	// Sort the traincor sentences in descending order of length
-	CompareLen comp;
-	sort(traincor.begin(), traincor.end(), comp);
-	// Pad the sentences in the same batch with EOS so they are the same length
-	// This modifies the traincor objective a bit by making it necessary to
-	// predict EOS multiple times, but it's easy and not so harmful
-	// Potential risk: if there is a very long sentence, computation will be significantly increased!
-	for(size_t i = 0; i < traincor.size(); i += BATCH_SIZE)
-		for(size_t j = 1; j < BATCH_SIZE; ++j)
-			while(traincor[i+j].size() < traincor[i].size())
-				traincor[i+j].push_back(kEOS);
-
-	unsigned report_every_i = TREPORT;
-	unsigned devcor_every_i_reports = DREPORT;
-	double best = 9e+99;
-	
-	vector<unsigned> order((traincor.size() + BATCH_SIZE - 1) / BATCH_SIZE);
-	for (unsigned i = 0; i < order.size(); ++i) order[i] = i * BATCH_SIZE;
-
-	cerr << "**SHUFFLE\n";
-	shuffle(order.begin(), order.end(), *rndeng);
-
-	unsigned si = 0;//order.size();
-	Timer timer_epoch("completed in"), timer_iteration("completed in");
-	
-	int report = 0;
-	unsigned lines = 0;
-	while (sgd_trainer->epoch < MAX_EPOCH) {
-		rnn.EnableDropout(dropout_p);
-
-		double loss = 0;
-		unsigned tokens = 0, unk_tokens = 0;
-		for (unsigned i = 0; i < report_every_i; /*++i,*/ ++si) {
-			if (si == order.size()) {
-				//timing
-				cerr << "***Epoch " << sgd_trainer->epoch << " is finished. ";
-				timer_epoch.show();
-
-				si = 0;
-
-				if (ETA_EPOCH == 0)
-					sgd_trainer->update_epoch(); 
-				else sgd_trainer->update_epoch(1, ETA_EPOCH); // @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
-
-				if (sgd_trainer->epoch >= MAX_EPOCH) break;
-
-				cerr << "**SHUFFLE\n";
-				shuffle(order.begin(), order.end(), *rndeng);
-
-				timer_epoch.reset();
+			// learning rate scheduler 2: if the model has not been improved for lr_patience times, decrease the learning rate by lr_eta_decay factor.
+			if (eta_patience > 0 && cpt > 0 && cpt % eta_patience == 0){
+				cerr << "The model has not been improved for " << eta_patience << " times. Decreasing the learning rate..." << endl;
+				sgd_trainer->learning_rate /= ETA_DECAY;
 			}
-		
-			// build graph for this instance
-			ComputationGraph cg;
-			unsigned bsize = std::min((unsigned)traincor.size()-order[si], BATCH_SIZE); // batch size
-			unsigned c1 = 0, c2 = 0;
-			Expression i_xent = rnn.BuildLMGraph(traincor, order[si], bsize, c1/*tokens*/, c2/*unk_tokens*/, cg);
-		
-			float closs = as_scalar(cg.forward(i_xent));// consume the loss
-			if (!is_valid(closs)){
-				std::cerr << "***Warning***: nan or -nan values occurred!" << std::endl;
-				continue;
+
+			// another early stopping criterion
+			if (patience > 0 && cpt >= patience)
+			{
+				cerr << "The model has not been improved for " << patience << " times. Stopping now...!" << endl;
+				cerr << "No. of epochs so far: " << epoch << "." << endl;
+				cerr << "Best ppl on dev: " << exp(best / dtokens) << endl;
+				cerr << "--------------------------------------------------------------------------------------------------------" << endl;
+				break;
 			}
-		
-			loss += closs;
-			tokens += c1;
-			unk_tokens += c2;
 
-			cg.backward(i_xent);
-			sgd_trainer->update();
+			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 
-			lines += bsize;
-			i += bsize;			
-		}
-
-		if (sgd_trainer->epoch >= MAX_EPOCH) continue;
-	
-		sgd_trainer->status();
-		cerr << "sents=" << lines << " unks=" << unk_tokens << " E=" << (loss / tokens) << " ppl=" << exp(loss / tokens) << ' ';
-		double elapsed = timer_iteration.elapsed();		
-		cerr << "[time_elapsed=" << elapsed << "(msec)" << " (" << tokens * 1000.f / elapsed << " words/sec)]" << endl;  
-		timer_iteration.reset();
-
-		//rnn.RandomSample(); // uncomment this to see some randomly-generated sentences
-
-		// show score on devcor data?
-		//report++;		
-		report += report_every_i;
-		if (report % devcor_every_i_reports == 0) {
-			rnn.DisableDropout();
-			
-			double dloss = 0;
-			unsigned dtokens = 0, unk_dtokens = 0;
-			for (auto& sent: devcor){
-				ComputationGraph cg;
-				Expression i_xent = rnn.BuildLMGraph(sent, dtokens, unk_dtokens, cg);
-				dloss += as_scalar(cg.forward(i_xent));
-			}
-		
-			if (dloss < best) {
-				best = dloss;
-				//ofstream out(param_file);
-				//boost::archive::text_oarchive oa(out);
-				//oa << lm;
-				rnn.SaveModel(param_file);
-			}
-			//else
-			//	sgd_trainer->eta *= 0.5;
-		
-			cerr << "\n***DEV [epoch=" << (lines / (double)traincor.size()) << " eta=" << sgd_trainer->eta << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
-			timer_iteration.show();
 			timer_iteration.reset();
 		}
 	}	
@@ -553,13 +447,19 @@ inline void Create_MiniBatches(const Corpus& traincor,
 // --------------------------------------------------------------------------------------------------------------------------------
 
 template <class RNNLM_t>
-void TrainModel_Batch2(Model &model, RNNLM_t &rnn
+void TrainModel_Batch(ParameterCollection &model, RNNLM_t &rnn
 	, Corpus &traincor, Corpus &devcor
+	, unsigned patience, unsigned eta_patience
 	, Trainer* sgd_trainer
 	, const string& param_file, float dropout_p)
 {
 	if (BATCH_SIZE == 1){
-		TrainModel(model, rnn, traincor, devcor, sgd_trainer, param_file, dropout_p);
+		TrainModel(model, rnn, 
+			traincor, devcor, 
+			patience, eta_patience, 
+			sgd_trainer, 
+			param_file, 
+			dropout_p);
 		return;
 	}	
 
@@ -576,9 +476,9 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 	unsigned report_every_i = TREPORT;
 	unsigned dev_every_i_reports = DREPORT;
 	double best = 9e+99;
-	unsigned si = 0, last_print = 0, lines = 0;
-	Timer timer_epoch("completed in"), timer_iteration("completed in");
-	while (sgd_trainer->epoch < MAX_EPOCH) {
+	unsigned si = 0, last_print = 0, lines = 0, epoch = 0, cpt = 0/*count of patience*/;
+	MyTimer timer_epoch("completed in"), timer_iteration("completed in");
+	while (epoch < MAX_EPOCH) {
 		rnn.EnableDropout(dropout_p);
 
 		double loss = 0;
@@ -586,18 +486,19 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 		for (unsigned i = 0; i < dev_every_i_reports; ++si) {
 			if (si == train_ids_minibatch.size()) {
 				//timing
-				cerr << "***Epoch " << sgd_trainer->epoch << " is finished. ";
+				cerr << "***Epoch " << epoch << " is finished. ";
 				timer_epoch.show();
+
+				epoch++;
 
 				si = 0;
 				last_print = 0;								
 				lines = 0;
 
-				if (ETA_EPOCH == 0)
-					sgd_trainer->update_epoch(); 
-				else sgd_trainer->update_epoch(1, ETA_EPOCH); // @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
+				if (ETA_EPOCH > 0 && epoch >= ETA_EPOCH)
+					sgd_trainer->learning_rate /= ETA_DECAY;// @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
 
-				if (sgd_trainer->epoch >= MAX_EPOCH) break;
+				if (epoch >= MAX_EPOCH) break;
 
 				cerr << "**SHUFFLE\n";
 				shuffle(train_ids_minibatch.begin(), train_ids_minibatch.end(), *dynet::rndeng);
@@ -642,7 +543,7 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 
 		timer_iteration.reset();
 
-		if (sgd_trainer->epoch >= MAX_EPOCH) continue;
+		if (epoch >= MAX_EPOCH) continue;
 
 		//rnn.RandomSample(); // uncomment this to see some randomly-generated sentences
 
@@ -663,14 +564,35 @@ void TrainModel_Batch2(Model &model, RNNLM_t &rnn
 			//boost::archive::text_oarchive oa(out);
 			//oa << lm;
 			rnn.SaveModel(param_file);
+			cpt = 0;
 		}
-		//else
-		//	sgd_trainer->eta *= 0.5;
-	
+		else cpt++;
+			
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
-		cerr << "***DEV [epoch=" << sgd_trainer->epoch + lines / (double)traincor.size() << " eta=" << sgd_trainer->eta << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
+		cerr << "***DEV [epoch=" << epoch + lines / (double)traincor.size() << " eta=" << sgd_trainer->learning_rate << "]" << " sents=" << devcor.size() << " unks=" << unk_dtokens << " E=" << (dloss / dtokens) << " ppl=" << exp(dloss / dtokens) << ' ';
+
+		if (cpt > 0) cerr << "(not improved, best ppl on dev so far = " << exp(best / dtokens) << ") ";
+
 		timer_iteration.show();
+
+		// learning rate scheduler 2: if the model has not been improved for lr_patience times, decrease the learning rate by lr_eta_decay factor.
+		if (eta_patience > 0 && cpt > 0 && cpt % eta_patience == 0){
+			cerr << "The model has not been improved for " << eta_patience << " times. Decreasing the learning rate..." << endl;
+			sgd_trainer->learning_rate /= ETA_DECAY;
+		}
+
+		// another early stopping criterion
+		if (patience > 0 && cpt >= patience)
+		{
+			cerr << "The model has not been improved for " << patience << " times. Stopping now...!" << endl;
+			cerr << "No. of epochs so far: " << epoch << "." << endl;
+			cerr << "Best ppl on dev: " << exp(best / dtokens) << endl;
+			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
+			break;
+		}
+
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
+
 		timer_iteration.reset();
 	}	
 

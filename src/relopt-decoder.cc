@@ -4,8 +4,6 @@
 #include <fstream>
 #include <sstream>
 
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/variables_map.hpp>
 #include <boost/algorithm/string.hpp>
@@ -38,6 +36,9 @@ int main(int argc, char** argv) {
 		//-----------------------------------------		
 		("train,t", value<string>(), "file containing training sentences, with "
 			"each line consisting of source ||| target.")
+		("src_vocab", value<string>()->default_value(""), "file containing source vocabulary file; none by default (will be built from train file); none by default")
+		("trg_vocab", value<string>()->default_value(""), "file containing target vocabulary file; none by default (will be built from train file); none by default")
+		//-----------------------------------------		
 		("initialise,i", value<string>(), "load pre-trained parameters (left-to-right AM model) from file")
 		("initialise_r2l", value<string>(), "load pre-trained parameters (right-to-left AM model) from file")
 		("initialise_t2s", value<string>(), "load pre-trained parameters (target-to-source AM model) from file")
@@ -53,7 +54,6 @@ int main(int argc, char** argv) {
 		//-----------------------------------------
 		("gru", "use Gated Recurrent Unit (GRU) for recurrent structure; default RNN")
 		("lstm", "use Long Short Term Memory (GRU) for recurrent structure; default RNN")
-		("vlstm", "use Vanilla Long Short Term Memory (VLSTM) for recurrent structure; default RNN")
 		("dglstm", "use Depth-Gated Long Short Term Memory (DGLSTM) (Kaisheng et al., 2015; https://arxiv.org/abs/1508.03790) for recurrent structure; default RNN") 
 		//-----------------------------------------
 		("bidirectional", "use bidirectional recurrent hidden states as source embeddings, rather than word embeddings")
@@ -120,8 +120,6 @@ int main(int argc, char** argv) {
 
 	if (vm.count("lstm"))// LSTM
 		return main_body<LSTMBuilder>(vm);
-	else if (vm.count("vlstm"))// VLSTM
-		return main_body<VanillaLSTMBuilder>(vm);
 	else if (vm.count("gru"))// GRU
 		return main_body<GRUBuilder>(vm);
 	else if (vm.count("dglstm"))// DGLSTM
@@ -130,7 +128,9 @@ int main(int argc, char** argv) {
 		return main_body<SimpleRNNBuilder>(vm);
 }
 
-void Initialise(Model &model, const string &filename);
+void Load_Vocabs(const string& src_vocab_file, const string& trg_vocab_file);
+
+void Initialise(ParameterCollection &model, const string &filename);
 
 Corpus Read_Corpus(const string &filename, bool doco);
 std::vector<int> Read_Numbered_Sentence(const std::string& line, Dict* sd, std::vector<int> &ids);
@@ -140,10 +140,6 @@ void Read_KBest(const string &line, std::vector<string>& segs);
 template <class rnn_t>
 int main_body(variables_map vm)
 {
-	kSRC_SOS = sd.convert("<s>");
-	kSRC_EOS = sd.convert("</s>");
-	kTGT_SOS = td.convert("<s>");
-	kTGT_EOS = td.convert("</s>");
 	verbose = vm.count("verbose");
 	bool timing = vm.count("timing");
 
@@ -164,14 +160,29 @@ int main_body(variables_map vm)
 	else if (vm.count("gru"))	flavour = "GRU";
 	//else if (vm.count("dglstm")) flavour = "DGLSTM";
 
+	// load fixed vocabularies from files if required	
+	Load_Vocabs(vm["src_vocab"].as<string>(), vm["trg_vocab"].as<string>());
+	kSRC_SOS = sd.convert("<s>");
+	kSRC_EOS = sd.convert("</s>");
+	kTGT_SOS = td.convert("<s>");
+	kTGT_EOS = td.convert("</s>");
+
 	Corpus training, devel, testing;
 	string line;
 	cerr << "Reading training data from " << vm["train"].as<string>() << "...\n";
 	training = Read_Corpus(vm["train"].as<string>(), doco);
-	kSRC_UNK = sd.convert("<unk>");// add <unk> if does not exist!
-	kTGT_UNK = td.convert("<unk>");
-	sd.freeze(); // no new word types allowed
-	td.freeze(); // no new word types allowed
+	if ("" == vm["src_vocab"].as<string>() 
+		&& "" == vm["trg_vocab"].as<string>()) // if not using external vocabularies
+	{
+		sd.freeze(); // no new word types allowed
+		td.freeze(); // no new word types allowed
+	}
+
+	// set up <s>, </s>, <unk> ids
+	sd.set_unk("<unk>");
+	td.set_unk("<unk>");
+	kSRC_UNK = sd.get_unk_id();
+	kTGT_UNK = td.get_unk_id();
 	
 	SRC_VOCAB_SIZE = sd.size();
 	TGT_VOCAB_SIZE = td.size();
@@ -205,7 +216,7 @@ int main_body(variables_map vm)
 	}
 
 	// pre-trained seq2seq model(s)
-	Model model, model_l2r, model_t2s, model_mlm, model_bam;
+	ParameterCollection model, model_l2r, model_t2s, model_mlm, model_bam;
 	
 	cerr << "%% Using " << flavour << " recurrent units" << endl;
 	AttentionalModel<rnn_t> am(&model, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE,
@@ -334,7 +345,7 @@ int main_body(variables_map vm)
 		std::vector<std::string> lines_ref(refs_in.size());
 		vector<tuple<float,float,float>> avg_scores(refs_in.size(), make_tuple(0.f, 0.f, 0.f));
 		unsigned line_count = 0, line_continued = vm["cline"].as<unsigned>();
-		Timer timer_dec("completed in");
+		MyTimer timer_dec("completed in");
 		DecTimeInfo dti;
 		while (getline(*src_in, line_src)){
 			if ("" == line_src) break;
@@ -419,7 +430,7 @@ int main_body(variables_map vm)
 		if(!*ref_in)
 			assert("Could not find ref_in file ");
 
-		Timer timer_dec("completed in");
+		MyTimer timer_dec("completed in");
 		std::string line_src, line_ref;
 		unsigned line_count = 0, line_continued = vm["cline"].as<unsigned>();
 		while (getline(*src_in, line_src) && getline(*ref_in, line_ref)){
@@ -544,6 +555,25 @@ void Read_Numbered_Sentence_Pair(const std::string& line, std::vector<int>* s, D
 	}
 }
 
+void Load_Vocabs(const string& src_vocab_file, const string& trg_vocab_file)
+{
+	if ("" == src_vocab_file || "" == trg_vocab_file) return;
+
+	cerr << "Loading vocabularies from files..." << endl;
+	cerr << "Source vocabulary file: " << src_vocab_file << endl;
+	cerr << "Target vocabulary file: " << trg_vocab_file << endl;
+	ifstream if_src_vocab(src_vocab_file), if_trg_vocab(trg_vocab_file);
+	string sword, tword;
+	while (getline(if_src_vocab, sword)) sd.convert(sword);
+	while (getline(if_trg_vocab, tword)) td.convert(tword);
+	
+	cerr << "Source vocabluary: " << sd.size() << endl;
+	cerr << "Target vocabluary: " << td.size() << endl;
+
+	sd.freeze();
+	td.freeze();
+}
+
 bool CompareString(const string& s1, const string& s2) {
 	return std::count(s1.begin(), s1.end(), ' ') > std::count(s2.begin(), s2.end(), ' ');
 }
@@ -569,7 +599,7 @@ void Read_KBest(const string &line, std::vector<string>& segs)
 	//std::sort(segs.begin(), segs.end(), CompareString);
 }
 
-void Initialise(Model &model, const string &filename)
+void Initialise(ParameterCollection &model, const string &filename)
 {
 	cerr << "Initialising model parameters from file: " << filename << endl;
 	//ifstream in(filename, ifstream::in);

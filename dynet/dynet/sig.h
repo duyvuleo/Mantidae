@@ -11,10 +11,11 @@ namespace dynet {
   namespace nt {
     enum NodeType { 
       tanh=1, sqrt, abs, erf, square, cube, exp, loggamma, log, nobackprop, flipgradient, identity, negate, rectify, logistic, softsign,
-      plus_const, concat, cmult, sum, squared_distance, pnls, pickrange,
-      input, scalar_input, lookup,
+      plus_const, concat, cmult, sum, squared_distance, softmax, pnls, pickrange, scalar_mult,
+      input, scalar_input, lookup, 
       COMPLEX,
       affine, matmul,
+      vanilla_lstm_gates, vanilla_lstm_h, vanilla_lstm_c,
     };
   }
 
@@ -83,6 +84,12 @@ struct SigHash {
   inline void add_int(int i) {
     hash = i + (hash << 6) + (hash << 16) - hash;
   }
+  inline void add_float(float i) {
+    assert(sizeof(int) >= sizeof(float));
+    int temp_val = 0;
+    memcpy(&temp_val, &i, sizeof(float));
+    hash = temp_val + (hash << 6) + (hash << 16) - hash;
+  }
   void add_node(unsigned i) { add_int((int)i); }
   void add_dim(const Dim &d) {
     add_int(-(int)d.nd);
@@ -143,9 +150,9 @@ struct SigLinearSortedMap {
     }
     found=0;
     sorted=false;
-    sigs.push_back(std::pair<Sig, int>(s, sigs.size()));
+    sigs.push_back(std::pair<Sig, int>(s, (int)sigs.size()));
     whiches.push_back(s.which);
-    return sigs.size()-1;
+    return (int)sigs.size()-1;
   }
   void clear() {
     sigs.clear(); whiches.clear(); sorted=false;

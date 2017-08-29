@@ -14,19 +14,16 @@
 
 #include <vector>
 
-#include <boost/serialization/export.hpp>
-
 #include "dynet/model.h"
 #include "dynet/shadow-params.h"
-#include "dynet/io-macros.h"
 
 #define DYNET_TRAINER_DEFINE_DEV_IMPL() \
-  void update_params(real scale, real gscale, size_t idx) override; \
-  void update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) override; \
-  void update_lookup_params(real scale, real gscale, size_t idx) override; \
+  void update_params(real gscale, size_t idx) override; \
+  void update_lookup_params(real gscale, size_t idx, size_t lidx) override; \
+  void update_lookup_params(real gscale, size_t idx) override; \
   template <class MyDevice> \
-  void update_rule_dev(const MyDevice & dev, real scale, real gscale, const std::vector<Tensor*> & values); \
-  void update_rule(real scale, real gscale, const std::vector<Tensor*> & values) override;
+  void update_rule_dev(const MyDevice & dev, real gscale, const std::vector<Tensor*> & values); \
+  void update_rule(real gscale, const std::vector<Tensor*> & values) override;
 
 namespace dynet {
 
@@ -41,22 +38,19 @@ struct Trainer {
   /**
    * \brief General constructor for a Trainer
    *
-   * \param m Model to be trained
-   * \param e0 Initial learning rate
-   * \param edecay Learning rate decay
+   * \param m ParameterCollection to be trained
+   * \param learning_rate Initial learning rate
    */
-  explicit Trainer(Model& m, real e0, real edecay = 0.0) :
-    eta0(e0), eta(e0), eta_decay(edecay), epoch(), clipping_enabled(true), clip_threshold(5),
+  explicit Trainer(ParameterCollection& m, real learning_rate) :
+    learning_rate(learning_rate), clipping_enabled(true), clip_threshold(5),
     clips(), updates(), clips_since_status(), updates_since_status(), sparse_updates_enabled(true), aux_allocated(false), model(&m) {}
   virtual ~Trainer();
 
   /**
    * \brief Update parameters
    * \details Update the parameters according to the appropriate update rule
-   *
-   * \param scale The scaling factor for the gradients
    */
-  virtual void update(real scale = 1.0);
+  virtual void update();
 
   /**
    * \brief Update subset of parameters
@@ -68,33 +62,24 @@ struct Trainer {
    *
    * \param updated_params The parameter indices to be updated
    * \param updated_lookup_params The lookup parameter indices to be updated
-   * \param scale The scaling factor for the gradients
    */
-  void update(const std::vector<unsigned> & updated_params, const std::vector<unsigned> & updated_lookup_params, real scale = 1.0);
+  void update(const std::vector<unsigned> & updated_params, const std::vector<unsigned> & updated_lookup_params);
 
-  void update_epoch(real r = 1) {
-    epoch += r;
-    eta = eta0 / (1 + epoch * eta_decay);
-  }
+  void update_epoch(real r = 1.0);
 
-  // -----------------------------------------------------------------------------------
-  // by Cong Duy Vu Hoang (vhoang2@student.unimelb.edu.au)
-  void update_epoch_only(real r = 1.0){
-    epoch += r;
-  }
+  /**
+   * @brief Restarts the optimizer
+   * @details Clears all momentum values and assimilate (if applicable)
+   */
+  virtual void restart() = 0;
 
-  void update_epoch(real r, unsigned _max_epoch = 4) {
-    epoch += r;
-    //Trick: decrease learning rate after a fixed number of epochs (e.g. _max_epoch)
-    if (epoch >= _max_epoch)
-      eta /= eta_decay;
-  }
-
-  void update_learning_rate()
-  {
-    eta /= eta_decay;
-  }
-  // -----------------------------------------------------------------------------------
+  /**
+   * @brief Restarts the optimizer with a new learning rate
+   * @details Clears all momentum values and assimilate (if applicable) and resets the learning rate
+   *
+   * \param learning_rate New learning rate
+   */
+  void restart(real lr);
 
   /**
    * \brief Clip gradient
@@ -102,21 +87,17 @@ struct Trainer {
    *          scale the gradient by (otherwise 1)
    *
    *
-   * \param scale The clipping limit
    * \return The appropriate scaling factor
    */
-  float clip_gradients(real scale);
+  float clip_gradients();
 
   // TODO: This is unprotected temporarily until there is a better solution
   //       for serializing the weight decay when saving models
   // Rescale all the parameters handled by this model
   void rescale_and_reset_weight_decay();
 
-  // learning rates
-  real eta0;
-  real eta;
-  real eta_decay;
-  real epoch;
+  // learning rate
+  real learning_rate;
 
   // clipping
   bool clipping_enabled;
@@ -143,11 +124,11 @@ struct Trainer {
   bool aux_allocated;
 
   void status() {
-    std::cerr << "[epoch=" << epoch << " eta=" << eta << " clips=" << clips_since_status << " updates=" << updates_since_status << "] ";
+    std::cerr << "[lr=" << learning_rate << " clips=" << clips_since_status << " updates=" << updates_since_status << "] ";
     updates_since_status = clips_since_status = 0;
   }
 
-  Model* model;  // parameters and gradients live here
+  ParameterCollection* model;  // parameters and gradients live here
 
 protected:
   Trainer() {}
@@ -159,35 +140,33 @@ protected:
    * \param gscale Gradient scale based on clipping
    * \param values Values specific to the particular update rule being implemented
    */
-  virtual void update_rule(real scale, real gscale, const std::vector<Tensor*> & values) = 0;
+  virtual void update_rule(real gscale, const std::vector<Tensor*> & values) = 0;
   /**
    * \brief Parameter update function
    *
    * \param scale Scale of the update (i.e. learning rate)
    * \param gscale Gradient scale based on clipping
-   * \param idx Index of the parameter
+   * \param idx The ID of the parameter to update
    */
-  virtual void update_params(real scale, real gscale, size_t idx) = 0;
+  virtual void update_params(real gscale, size_t idx) = 0;
   /**
    * \brief Sparse lookup parameter update function
    *
    * \param scale Scale of the update (i.e. learning rate)
    * \param gscale Gradient scale based on clipping
-   * \param idx Index of the lookup parameter object
+   * \param idx The ID of the parameter to update
    * \param lidx Index of the specific entry within the lookup parameter object
    */
-  virtual void update_lookup_params(real scale, real gscale, size_t idx, size_t lidx) = 0;
+  virtual void update_lookup_params(real gscale, size_t idx, size_t lidx) = 0;
   /**
    * \brief Dense lookup parameter update function
    *
    * \param scale Scale of the update (i.e. learning rate)
    * \param gscale Gradient scale based on clipping
-   * \param idx Index of the lookup parameter object
+   * \param idx The ID of the parameter to update
    */
-  virtual void update_lookup_params(real scale, real gscale, size_t idx) = 0;
+  virtual void update_lookup_params(real gscale, size_t idx) = 0;
 
-private:
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -204,16 +183,16 @@ struct SimpleSGDTrainer : public Trainer {
   /**
    * \brief Constructor
    *
-   * \param m Model to be trained
-   * \param e0 Initial learning rate
-   * \param edecay Learning rate decay parameter.
+   * \param m ParameterCollection to be trained
+   * \param learning_rate Initial learning rate
    */
-  explicit SimpleSGDTrainer(Model& m, real e0 = 0.1, real edecay = 0.0) : Trainer(m, e0, edecay) {}
+  explicit SimpleSGDTrainer(ParameterCollection& m, real learning_rate = 0.1) : Trainer(m, learning_rate) {}
+  void restart() override {};
+  using Trainer::restart;
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
 private:
   SimpleSGDTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -242,21 +221,26 @@ struct CyclicalSGDTrainer : public Trainer {
   /**
    * \brief Constructor
    *
-   * \param m Model to be trained
-   * \param e0_min Lower learning rate
-   * \param e0_max Upper learning rate
+   * \param m ParameterCollection to be trained
+   * \param learning_rate_min Lower learning rate
+   * \param learning_rate_max Upper learning rate
    * \param step_size Period of the triangular function in number of iterations (__not__ epochs). According to the original paper, this should be set around (2-8) x (training iterations in epoch)
    * \param gamma Learning rate upper bound decay parameter
    * \param edecay Learning rate decay parameter. Ideally you shouldn't use this with cyclical learning rate since decay is already handled by \f$\gamma\f$
    */
-  explicit CyclicalSGDTrainer(Model& m, float e0_min = 0.01, float e0_max = 0.1, float step_size = 2000, float gamma = 0.0, float edecay = 0.0) : Trainer(m, e0_min, edecay), e_min(e0_min), e_max(e0_max), step_size(step_size), gamma(gamma), it(0) {}
-  void update(real scale = 1.0) { Trainer::update(scale);cyclic_update_eta();}
+  explicit CyclicalSGDTrainer(ParameterCollection& m, float learning_rate_min = 0.01, float learning_rate_max = 0.1, float step_size = 2000, float gamma = 0.0, float edecay = 0.0) : Trainer(m, learning_rate_min), e_min(learning_rate_min), e_max(learning_rate_max), step_size(step_size), gamma(gamma), it(0) {}
+  void restart() override {};
+  using Trainer::restart;
+  void update() override {
+    Trainer::update();
+    cyclic_update_eta();
+  }
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   void cyclic_update_eta() {
     float cycle = std::floor(1 + ((float) it)  / (2 * step_size));
     float x = std::abs( ((float) it) / step_size - 2 * cycle + 1);
-    eta = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * (real)std::pow(gamma, it) : 0);
+    learning_rate = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * (real)std::pow(gamma, it) : 0);
     it++;
   }
   float e_min;
@@ -266,7 +250,6 @@ protected:
   unsigned it;
 private:
   CyclicalSGDTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 
@@ -284,28 +267,28 @@ struct MomentumSGDTrainer : public Trainer {
   /**
    * \brief Constructor
    *
-   * \param m Model to be trained
-   * \param e0 Initial learning rate
+   * \param m ParameterCollection to be trained
+   * \param learning_rate Initial learning rate
    * \param mom Momentum
-   * \param edecay Learning rate decay parameter
    */
-  explicit MomentumSGDTrainer(Model& m, real e0 = 0.01, real mom = 0.9, real edecay = 0.0) :
-    Trainer(m, e0, edecay), momentum(mom) {}
+  explicit MomentumSGDTrainer(ParameterCollection& m, real learning_rate = 0.01, real mom = 0.9) :
+    Trainer(m, learning_rate), momentum(mom) {}
 
+  void restart() override;
+  using Trainer::restart;
+
+  // the following represent the current velocity
+  // The shadow parameters are made public for testing, ideally they shouldn't be
+  std::vector<ShadowParameters> vp;
+  std::vector<ShadowLookupParameters> vlp;
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
 
   real momentum;
 
-  // the following represent the current velocity
-  std::vector<ShadowParameters> vp;
-  std::vector<ShadowLookupParameters> vlp;
-  //std::unordered_map<ParameterStorage*, Tensor> vp;
-  //std::unordered_map<LookupParameterStorage*, std::unordered_map<unsigned, Tensor>> vl;
 private:
   MomentumSGDTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -322,13 +305,15 @@ struct AdagradTrainer : public Trainer {
   /**
    * \brief Constructor
    *
-   * \param m Model to be trained
-   * \param e0 Initial learning rate
+   * \param m ParameterCollection to be trained
+   * \param learning_rate Initial learning rate
    * \param eps Bias parameter \f$\epsilon\f$ in the adagrad formula
-   * \param edecay Learning rate decay parameter
    */
-  explicit AdagradTrainer(Model& m, real e0 = 0.1, real eps = 1e-20, real edecay = 0.0) :
-    Trainer(m, e0, edecay), epsilon(eps) {}
+  explicit AdagradTrainer(ParameterCollection& m, real learning_rate = 0.1, real eps = 1e-20) :
+    Trainer(m, learning_rate), epsilon(eps) {}
+
+  void restart() override;
+  using Trainer::restart;
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
@@ -338,7 +323,6 @@ protected:
   std::vector<ShadowLookupParameters> vlp;
 private:
   AdagradTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -357,13 +341,15 @@ struct AdadeltaTrainer : public Trainer {
   /**
    * \brief Constructor
    *
-   * \param m Model to be trained
+   * \param m ParameterCollection to be trained
    * \param eps Bias parameter \f$\epsilon\f$ in the adagrad formula
    * \param rho Update parameter for the moving average of updates in the numerator
-   * \param edecay Learning rate decay parameter
    */
-  explicit AdadeltaTrainer(Model& m, real eps = 1e-6, real rho = 0.95, real edecay = 0.0) :
-    Trainer(m, 1.0, edecay), epsilon(eps), rho(rho) {}
+  explicit AdadeltaTrainer(ParameterCollection& m, real eps = 1e-6, real rho = 0.95) :
+    Trainer(m, 1.0), epsilon(eps), rho(rho) {}
+
+  void restart() override;
+  using Trainer::restart;
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
@@ -376,7 +362,6 @@ protected:
   std::vector<ShadowLookupParameters> hld;
 private:
   AdadeltaTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -392,14 +377,16 @@ struct RMSPropTrainer : public Trainer {
   /**
    * \brief Constructor
    *
-   * \param m Model to be trained
-   * \param e0 Initial learning rate
+   * \param m ParameterCollection to be trained
+   * \param learning_rate Initial learning rate
    * \param eps Bias parameter \f$\epsilon\f$ in the adagrad formula
    * \param rho Update parameter for the moving average (`rho = 0` is equivalent to using Adagrad)
-   * \param edecay Learning rate decay parameter
    */
-  explicit RMSPropTrainer(Model& m, real e0 = 0.001, real eps = 1e-08, real rho = 0.9, real edecay = 0.0) :
-    Trainer(m, e0, edecay), epsilon(eps), rho(rho) {}
+  explicit RMSPropTrainer(ParameterCollection& m, real learning_rate = 0.1, real eps = 1e-20, real rho = 0.95) :
+    Trainer(m, learning_rate), epsilon(eps), rho(rho) {}
+
+  void restart() override;
+  using Trainer::restart;
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
@@ -410,7 +397,6 @@ protected:
   std::vector<ShadowLookupParameters> hlmsg;
 private:
   RMSPropTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -427,15 +413,17 @@ struct AdamTrainer : public Trainer {
   /**
    * \brief Constructor
    *
-   * \param m Model to be trained
-   * \param e0 Initial learning rate
+   * \param m ParameterCollection to be trained
+   * \param learning_rate Initial learning rate
    * \param beta_1 Moving average parameter for the mean
    * \param beta_2 Moving average parameter for the variance
    * \param eps Bias parameter \f$\epsilon\f$
-   * \param edecay Learning rate decay parameter
    */
-  explicit AdamTrainer(Model& m, float e0 = 0.001, float beta_1 = 0.9, float beta_2 = 0.999, float eps = 1e-8, real edecay = 0.0) :
-    Trainer(m, e0, edecay), beta_1(beta_1), beta_2(beta_2), epsilon(eps) {}
+  explicit AdamTrainer(ParameterCollection& m, float learning_rate = 0.001, float beta_1 = 0.9, float beta_2 = 0.999, float eps = 1e-8) :
+    Trainer(m, learning_rate), beta_1(beta_1), beta_2(beta_2), epsilon(eps) {}
+
+  void restart() override;
+  using Trainer::restart;
 
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
@@ -450,22 +438,20 @@ protected:
   std::vector<ShadowLookupParameters> lv;
 private:
   AdamTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
-// Written by Cong Duy Vu Hoang
 /**
  * \ingroup optimizers
- * 
+ *
  * \brief Exponentiated gradient optimizer with momentum and cyclical learning rate
  * \details FIXME
- *  
+ *
  * Reference : FIXME
- *   
+ *
 */
 struct EGTrainer : public Trainer {
-  explicit EGTrainer(Model& mod, real e0 = 0.1, real mom = 0.9, real ne = 0.0, real edecay = 0.0)
-    : Trainer(mod, e0, edecay), momentum(mom), isCyclical(false), noise_eta(ne) {
+  explicit EGTrainer(ParameterCollection& mod, real learning_rate = 0.1, real mom = 0.9, real nlr = 0.0)
+    : Trainer(mod, learning_rate), momentum(mom), isCyclical(false), noise_lr(nlr) {
     zeg.d = meg.d = {1};
     zeg.device = meg.device = default_device;
     default_device->allocate_tensor(DeviceMempool::PS, zeg);
@@ -473,26 +459,28 @@ struct EGTrainer : public Trainer {
   }
 
 //-----------------------------------------------------------------------------------------
-  void enableCyclicalLR(float _e0_min = 0.01, float _e0_max = 0.1, float _step_size = 2000, float _gamma = 0.0){
+  void enableCyclicalLR(float _learning_rate_min = 0.01, float _learning_rate_max = 0.1, float _step_size = 2000, float _gamma = 0.0) {
     isCyclical = true;
-    e_min = _e0_min;
-    e_max = _e0_max;
+    e_min = _learning_rate_min;
+    e_max = _learning_rate_max;
     step_size = _step_size;
     gamma = _gamma;
     it = 0;
   }
 
-  void update_noise_eta(real ne){
-    noise_eta = ne;
-  }  
+  void update_noise_lr(real nlr){
+    noise_lr = nlr;
+  } 
 
-  virtual void update(real scale = 1.0) override { 
-    Trainer::update(scale); 
+  virtual void update() override {
+    Trainer::update();
     if (isCyclical) cyclic_update_eta();
   }
 //-----------------------------------------------------------------------------------------
 
- protected:
+  void restart() override;
+  using Trainer::restart;
+protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
 
@@ -508,8 +496,7 @@ struct EGTrainer : public Trainer {
   void cyclic_update_eta() {
     float cycle = std::floor(1 + ((float) it)  / (2 * step_size));
     float x = std::abs( ((float) it) / step_size - 2 * cycle + 1);
-    //std::cerr << "cycle=" << cycle << "; " << "x=" << x << std::endl;
-    eta = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * std::pow(gamma, it) : 0);
+    learning_rate = e_min + ((1 - x) > 0 ? (e_max - e_min) * (1 - x) * (real) std::pow(gamma, it) : 0);
     it++;
   }
 
@@ -527,15 +514,13 @@ struct EGTrainer : public Trainer {
 //-----------------------------------------------------------------------------------------
 
 //-----------------------------------------------------------------------------------------
-  real noise_eta;
+  real noise_lr;
 //-----------------------------------------------------------------------------------------
 
- private:
+private:
   EGTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
-// Written by Cong Duy Vu Hoang
 /**
  * \ingroup optimizers
  * 
@@ -546,14 +531,17 @@ struct EGTrainer : public Trainer {
  *   
 */
 struct AdamEGTrainer : public Trainer {
-  explicit AdamEGTrainer(Model& mod, real e0 = 0.001, float _beta_1 = 0.9, float _beta_2 = 0.999, float eps = 1e-8, real edecay = 0.0) : 
-    Trainer(mod, e0, edecay), beta_1(_beta_1), beta_2(_beta_2), epsilon(eps) {
+  explicit AdamEGTrainer(ParameterCollection& m, float learning_rate = 0.001, float _beta_1 = 0.9, float _beta_2 = 0.999, float eps = 1e-8) : 
+    Trainer(m, learning_rate), beta_1(_beta_1), beta_2(_beta_2), epsilon(eps) {
     zeg.d = meg.d = {1};
     zeg.device = meg.device = default_device;
     default_device->allocate_tensor(DeviceMempool::PS, zeg);
     default_device->allocate_tensor(DeviceMempool::PS, meg);
   }
  
+  void restart() override;
+  using Trainer::restart;
+
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
@@ -575,7 +563,6 @@ protected:
 
  private:
   AdamEGTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 // Written by Cong Duy Vu Hoang
@@ -589,14 +576,17 @@ protected:
  *   
 */
 struct RMSPropEGTrainer : public Trainer {
-  explicit RMSPropEGTrainer(Model& mod, real e0 = 0.001, real eps = 1e-08, real rho = 0.9, real edecay = 0.0) : 
-    Trainer(mod, e0, edecay), epsilon(eps), rho(rho) {
+  explicit RMSPropEGTrainer(ParameterCollection& m, real learning_rate = 0.1, real eps = 1e-20, real rho = 0.95) :
+    Trainer(m, learning_rate), epsilon(eps), rho(rho) {
     zeg.d = meg.d = {1};
     zeg.device = meg.device = default_device;
     default_device->allocate_tensor(DeviceMempool::PS, zeg);
     default_device->allocate_tensor(DeviceMempool::PS, meg);
   }
  
+  void restart() override;
+  using Trainer::restart;
+
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
@@ -615,7 +605,6 @@ protected:
 
  private:
   RMSPropEGTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -636,11 +625,14 @@ struct SGLDTrainer : public Trainer {
    * \param e0 Initial learning rate
    * \param edecay Learning rate decay parameter.
    */
-  explicit SGLDTrainer(Model& m, real e0 = 0.1, real edecay = 0.0) : Trainer(m, e0, edecay) {}
+  explicit SGLDTrainer(ParameterCollection& m, real learning_rate = 0.1) : Trainer(m, learning_rate) {}
 
 protected:
   std::vector<ShadowParameters> np; // noises to be injected to parameters
   std::vector<ShadowLookupParameters> nlp;// noises to be injected to lookup parameters
+
+  void restart() override;
+  using Trainer::restart;
 
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
@@ -648,7 +640,6 @@ protected:
 
 private:
   SGLDTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 /**
@@ -670,8 +661,12 @@ struct pSGLDTrainer : public Trainer {
    * \param rho Update parameter for the moving average (`rho = 0` is equivalent to using Adagrad)
    * \param edecay Learning rate decay parameter
    */
-  explicit pSGLDTrainer(Model& m, real e0 = 0.001, real eps = 1e-08, real rho = 0.9, real edecay = 0.0) :
-    Trainer(m, e0, edecay), epsilon(eps), rho(rho) {}
+  explicit pSGLDTrainer(ParameterCollection& m, real learning_rate = 0.1, real eps = 1e-20, real rho = 0.95) :
+    Trainer(m, learning_rate), epsilon(eps), rho(rho) {}
+
+  void restart() override;
+  using Trainer::restart;
+
 protected:
   DYNET_TRAINER_DEFINE_DEV_IMPL()
   virtual void alloc_impl() override;
@@ -682,25 +677,8 @@ protected:
   std::vector<ShadowLookupParameters> hlmsg;
 private:
   pSGLDTrainer() {}
-  DYNET_SERIALIZE_DECLARE()
 };
 
 } // namespace dynet
-
-BOOST_CLASS_EXPORT_KEY(dynet::SimpleSGDTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::CyclicalSGDTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::MomentumSGDTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::AdagradTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::AdadeltaTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::RMSPropTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::AdamTrainer)
-//---
-BOOST_CLASS_EXPORT_KEY(dynet::SGLDTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::pSGLDTrainer)
-//---
-BOOST_CLASS_EXPORT_KEY(dynet::EGTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::AdamEGTrainer)
-BOOST_CLASS_EXPORT_KEY(dynet::RMSPropEGTrainer)
-//---
 
 #endif

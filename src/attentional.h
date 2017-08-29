@@ -1,7 +1,10 @@
+// dynet_v2
+
 #pragma once
 
 #include "dynet/globals.h"
 #include "dynet/nodes.h"
+#include "dynet/param-init.h"
 #include "dynet/dynet.h"
 #include "dynet/training.h"
 #include "dynet/timing.h"
@@ -58,7 +61,7 @@ struct ModelStats {
 
 template <class Builder>
 struct AttentionalModel {
-	explicit AttentionalModel(dynet::Model* model,
+	explicit AttentionalModel(dynet::ParameterCollection* model,
 		unsigned _src_vocab_size, unsigned _tgt_vocab_size, unsigned slayers, unsigned tlayers, unsigned hidden_dim, 
 		unsigned align_dim, bool _rnn_src_embeddings, bool _giza_positional, 
 		bool _giza_markov, bool _giza_fertility, bool _doc_context,
@@ -165,7 +168,7 @@ struct AttentionalModel {
 	std::vector<int> Sample(const std::vector<int> &source, ComputationGraph& cg, 
 		Dict &tdict, const std::vector<int>* ctx=0);
 
-	void Add_Global_Fertility_Params(dynet::Model* model, unsigned hidden_dim, bool _rnn_src_embeddings);
+	void Add_Global_Fertility_Params(dynet::ParameterCollection* model, unsigned hidden_dim, bool _rnn_src_embeddings);
 
 	LookupParameter p_cs;// source vocabulary lookup
 	LookupParameter p_ct;// target vocabulary lookup
@@ -248,7 +251,7 @@ struct AttentionalModel {
 	KTHXBYE(expression) 
 
 template <class Builder>
-AttentionalModel<Builder>::AttentionalModel(dynet::Model* model,
+AttentionalModel<Builder>::AttentionalModel(dynet::ParameterCollection* model,
 	unsigned _src_vocab_size, unsigned _tgt_vocab_size
 	, unsigned slayers, unsigned tlayers
 	, unsigned hidden_dim, unsigned align_dim
@@ -343,7 +346,7 @@ void AttentionalModel<Builder>::Disable_Dropout()
 }
 
 template <class Builder>
-void AttentionalModel<Builder>::Add_Global_Fertility_Params(dynet::Model* model, unsigned hidden_dim, bool _rnn_src_embeddings)
+void AttentionalModel<Builder>::Add_Global_Fertility_Params(dynet::ParameterCollection* model, unsigned hidden_dim, bool _rnn_src_embeddings)
 {
 	if (global_fertility){
 		if (_rnn_src_embeddings) {

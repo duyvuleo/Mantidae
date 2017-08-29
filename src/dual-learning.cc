@@ -18,8 +18,6 @@
 #include <fstream>
 #include <sstream>
 
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/variables_map.hpp>
 #include <boost/algorithm/string.hpp>
@@ -42,12 +40,12 @@ typedef vector<Sentence> MonoCorpus;
 
 int main_body(variables_map vm);
 
-void InitialiseModel(Model &model, const string &filename);
+void InitialiseModel(ParameterCollection &model, const string &filename);
 ParaCorpus Read_ParaCorpus(const string &filename);
 MonoCorpus Read_MonoCorpus(const string &filename, Dict& d);
 
 template<class AM_t, class LM_t>
-void Dual_Learn(Model& mod_am_s2t, AM_t& p_am_s2t
+void Dual_Learn(ParameterCollection& mod_am_s2t, AM_t& p_am_s2t
 		, Model& mod_am_t2s, AM_t& p_am_t2s
 		, Model& mod_mlm_s, LM_t& p_mlm_s
 		, Model& mod_mlm_t, LM_t& p_mlm_t
@@ -169,8 +167,8 @@ int main(int argc, char** argv) {
 	ss.clear();
 	ss.str(line);
 	ss >> SLAYERS >> TLAYERS >> HIDDEN_DIM >> ALIGN_DIM;
-	p_am_t2s.reset(new AttentionalModel<LSTMBuilder>(&model_am_t2s, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE,
-		SLAYERS, TLAYERS, HIDDEN_DIM, ALIGN_DIM, true, false, false, false, false, false));
+	p_am_t2s.reset(new AttentionalModel<LSTMBuilder>(&model_am_t2s, TGT_VOCAB_SIZE, SRC_VOCAB_SIZE,
+		SLAYERS, TLAYERS, HIDDEN_DIM, ALIGN_DIM, true, false, false, false, false, false));// standard model for now
 	InitialiseModel(model_am_t2s, vm["initialise_am_t2s"].as<string>());
 
 	// s RNNLM model
@@ -204,7 +202,7 @@ int main(int argc, char** argv) {
 }
 
 template<class AM_t, class LM_t>
-void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
+void Dual_Learn(ParameterCollection& mod_am_s2t, AM_t& am_s2t
 		, Model& mod_am_t2s, AM_t& am_t2s
 		, Model& mod_mlm_s, LM_t& mlm_s
 		, Model& mod_mlm_t, LM_t& mlm_t
@@ -216,14 +214,12 @@ void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
 	// set up the decoder(s)
 	EnsembleDecoder<AM_t> edec_s2t(std::vector<std::shared_ptr<AM_t>>({std::make_shared<AM_t>(am_s2t)}), &tdict);
 	edec_s2t.SetBeamSize(beam_size);
-	EnsembleDecoder<AM_t> edec_t2s(std::vector<std::shared_ptr<AM_t>>({std::make_shared<AM_t>(am_t2s)}), &tdict);
+	EnsembleDecoder<AM_t> edec_t2s(std::vector<std::shared_ptr<AM_t>>({std::make_shared<AM_t>(am_t2s)}), &sdict);
 	edec_t2s.SetBeamSize(beam_size);
 
 	// set up monolingual data
 	vector<unsigned> orders_s(mono_cor_s.size());// IDs from mono_cor_s
 	vector<unsigned> orders_t(mono_cor_t.size());// IDs from mono_cor_t
-	std::iota(orders_s.begin(), orders_s.end(), 0);
-	std::iota(orders_t.begin(), orders_t.end(), 0);
 	shuffle(orders_s.begin(), orders_s.end(), *rndeng);// to make it random
 	shuffle(orders_t.begin(), orders_t.end(), *rndeng);
 	
@@ -265,21 +261,22 @@ void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
 	ModelStats stats;// normally unused
 	double best_loss_s2t = 9e+99, best_loss_t2s = 9e+99;
 	unsigned long id_s = 0, id_t = 0;
-	unsigned r = 0/*round*/;
+	unsigned r = 0/*round*/, epoch_s2t = 0, epoch_t2s = 0;
 	bool flag = true;// role of source and target
-	while (p_sgd_s2t->epoch < MAX_EPOCH && p_sgd_s2t->epoch < MAX_EPOCH)// simple stopping criterion 
+	while (epoch_s2t < MAX_EPOCH 
+		|| epoch_t2s < MAX_EPOCH)// FIXME: simple stopping criterion, another?
 	{		
 		ComputationGraph cg;
 
 		if (id_s == orders_s.size()){
 			shuffle(orders_s.begin(), orders_s.end(), *rndeng);// to make it random
 			id_s = 0;// reset id
-			p_sgd_s2t->update_epoch();// FIXME: adjust the learning rate if required?
+			epoch_s2t++;// FIXME: adjust the learning rate if required?
 		}
 		if (id_t == orders_t.size()){
 			shuffle(orders_t.begin(), orders_t.end(), *rndeng);// to make it random
 			id_t = 0;// reset id
-			p_sgd_t2s->update_epoch();// FIXME: adjust the learning rate if required?
+			epoch_t2s++;// FIXME: adjust the learning rate if required?
 		}
 
 		// sample sentence sentA and sentB from mono_cor_s and mono_cor_s respectively
@@ -331,8 +328,8 @@ void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
 		cg.backward(i_loss);
 
 		// update parameters
-		p_sgd_s2t->update(-1.f);// gradient ascent
-		p_sgd_t2s->update(-1.f);
+		p_sgd_s2t->update();// gradient ascent or descent?
+		p_sgd_t2s->update();
 
 		// switch source and target roles
 		flag = !flag;
@@ -365,8 +362,8 @@ void Dual_Learn(Model& mod_am_s2t, AM_t& am_s2t
 			}
 	
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
-			cerr << "***DEV (s2t) [epoch=" << p_sgd_s2t->epoch + (float)id_s/(float)orders_s.size() << " eta=" << p_sgd_s2t->eta << "]" << " sents=" << dev_cor.size() << " src_unks=" << dstats_s2t.words_src_unk << " trg_unks=" << dstats_s2t.words_tgt_unk << " E=" << (dstats_s2t.loss / dstats_s2t.words_tgt) << " ppl=" << exp(dstats_s2t.loss / dstats_s2t.words_tgt) << endl;
-			cerr << "***DEV (t2s) [epoch=" << p_sgd_t2s->epoch + (float)id_t/(float)orders_t.size() << " eta=" << p_sgd_t2s->eta << "]" << " sents=" << dev_cor.size() << " src_unks=" << dstats_t2s.words_src_unk << " trg_unks=" << dstats_t2s.words_tgt_unk << " E=" << (dstats_t2s.loss / dstats_t2s.words_tgt) << " ppl=" << exp(dstats_t2s.loss / dstats_t2s.words_tgt) << endl;
+			cerr << "***DEV (s2t) [epoch=" << epoch_s2t + (float)id_s/(float)orders_s.size() << " eta=" << p_sgd_s2t->learning_rate << "]" << " sents=" << dev_cor.size() << " src_unks=" << dstats_s2t.words_src_unk << " trg_unks=" << dstats_s2t.words_tgt_unk << " E=" << (dstats_s2t.loss / dstats_s2t.words_tgt) << " ppl=" << exp(dstats_s2t.loss / dstats_s2t.words_tgt) << endl;
+			cerr << "***DEV (t2s) [epoch=" << epoch_t2s + (float)id_t/(float)orders_t.size() << " eta=" << p_sgd_t2s->learning_rate << "]" << " sents=" << dev_cor.size() << " src_unks=" << dstats_t2s.words_src_unk << " trg_unks=" << dstats_t2s.words_tgt_unk << " E=" << (dstats_t2s.loss / dstats_t2s.words_tgt) << " ppl=" << exp(dstats_t2s.loss / dstats_t2s.words_tgt) << endl;
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 
 			r = 0;
@@ -427,7 +424,7 @@ MonoCorpus Read_MonoCorpus(const string &filename, Dict& d)
 	return corpus;
 }
 
-void InitialiseModel(Model &model, const string &filename)
+void InitialiseModel(ParameterCollection &model, const string &filename)
 {
 	cerr << "Initialising model parameters from file: " << filename << endl;
 	dynet::load_dynet_model(filename, &model);

@@ -10,13 +10,10 @@
 #include "dynet/dynet.h"
 #include "dynet/rnn.h"
 #include "dynet/expr.h"
-#include <boost/serialization/version.hpp>
-
-using namespace dynet::expr;
 
 namespace dynet {
 
-class Model;
+class ParameterCollection;
 /**
  * \ingroup rnnbuilders
  * \brief DGLSTMBuilder creates an DGLSTM unit with coupled input and forget gate as well as peepholes connections.
@@ -35,14 +32,15 @@ struct DGLSTMBuilder : public RNNBuilder {
    * \param layers Number of layers
    * \param input_dim Dimention of the input \f$x_t\f$
    * \param hidden_dim Dimention of the hidden states \f$h_t\f$ and \f$c_t\f$
-   * \param model Model holding the parameters
+   * \param model ParameterCollection holding the parameters
    */
   explicit DGLSTMBuilder(unsigned layers,
                        unsigned input_dim,
                        unsigned hidden_dim,
-                       Model& model);
+                       ParameterCollection& model);
 
   Expression back() const override { return (cur == -1? h0.back() : h[cur].back()); }
+
   std::vector<Expression> final_h() const override { return (h.size() == 0 ? h0 : h.back()); }
   std::vector<Expression> final_s() const override {
     std::vector<Expression> ret = (c.size() == 0 ? c0 : c.back());
@@ -72,35 +70,36 @@ struct DGLSTMBuilder : public RNNBuilder {
 
   void copy(const RNNBuilder & params) override;
 
-  void save_parameters_pretraining(const std::string& fname) const override;
-  void load_parameters_pretraining(const std::string& fname) override;
-
   /**
    * \brief Set the dropout rates to a unique value
    * \details This has the same effect as `set_dropout(d,d_h,d_c)` except that all the dropout rates are set to the same value.
    * \param d Dropout rate to be applied on all of \f$x,h,c\f$
    */
   void set_dropout(float d);
+  /**
+   * \brief Set all dropout rates to 0
+   * \details This is equivalent to `set_dropout(0)` or `set_dropout(0,0,0)`
+   *
+   */
   void disable_dropout();
   /**
-   * \brief Set dropout masks at the beginning of a sequence for a specific bathc size
-   * \details If this function is not called on batched input, the same mask will be applied across
-   * all batch elements. Use this to apply different masks to each batch element
-   *
-   * \param batch_size Batch size
+   * \brief Get parameters in LSTMBuilder
    */
+  ParameterCollection & get_parameter_collection() override;
 
- protected:
+protected:
   void new_graph_impl(ComputationGraph& cg, bool update) override;
   void start_new_sequence_impl(const std::vector<Expression>& h0) override;
   Expression add_input_impl(int prev, const Expression& x) override;
   Expression set_h_impl(int prev, const std::vector<Expression>& h_new) override;
   Expression set_s_impl(int prev, const std::vector<Expression>& s_new) override;
 
- private:
+private:
   void initialize_biases(); 
 
- public:
+public:
+  ParameterCollection local_model;
+
   // first index is layer, then ...
   std::vector<std::vector<Parameter>> params;
 
@@ -124,14 +123,10 @@ struct DGLSTMBuilder : public RNNBuilder {
   unsigned hid = 0;
 
 private:
-  DYNET_SERIALIZE_DECLARE()
   ComputationGraph  *_cg;
 
 };
 
 } // namespace dynet
-
-// Class version
-DYNET_VERSION_DEFINE(dynet::DGLSTMBuilder, 1);
 
 #endif

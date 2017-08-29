@@ -1,6 +1,6 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
 
-foreach(TARGET attentional biattentional train-rnnlm relopt-decoder dual-learning)
+foreach(TARGET attentional biattentional train-rnnlm relopt-decoder dual-learning dual-inference relopt-dpar)
   ADD_EXECUTABLE(${TARGET} ${TARGET}.cc)
   if(UNIX AND NOT APPLE)
     target_link_libraries(${TARGET} rt)

@@ -13,7 +13,6 @@
 
 using namespace dynet;
 using namespace std;
-using namespace dynet::expr;
 
 typedef vector<int> Sentence;
 typedef int WordId;
@@ -59,8 +58,8 @@ public:
 	std::vector<EnsembleDecoderHypPtr> GenerateNbest(const Sentence & sent_src, size_t nbest, dynet::ComputationGraph& cg);
 
 	// Ensemble together probabilities or log probabilities for a single word
-	dynet::expr::Expression EnsembleProbs(const std::vector<dynet::expr::Expression> & in, dynet::ComputationGraph & cg);
-	dynet::expr::Expression EnsembleLogProbs(const std::vector<dynet::expr::Expression> & in, dynet::ComputationGraph & cg);
+	Expression EnsembleProbs(const std::vector<Expression> & in, dynet::ComputationGraph & cg);
+	Expression EnsembleLogProbs(const std::vector<Expression> & in, dynet::ComputationGraph & cg);
 	
 	float GetWordPen() const { return word_pen_; }
 	float GetUnkPen() const { return unk_pen_; }
@@ -224,7 +223,7 @@ std::vector<EnsembleDecoderHypPtr> EnsembleDecoder<AM_t>::GenerateNbest(const Se
 			//cerr << "GenerateNbest::(2)::(d,Align) ";
 			WordId best_align = -1;
 			if(i_aligns.size() != 0) {
-				dynet::expr::Expression ens_align = sum(i_aligns);
+				Expression ens_align = sum(i_aligns);
 				vector<dynet::real> align = as_vector(cg.incremental_forward(ens_align));
 				best_align = 0;
 				for(size_t aid = 0; aid < align.size(); aid++)

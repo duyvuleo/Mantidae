@@ -22,7 +22,7 @@ unsigned MINIBATCH_SIZE = 1;
 bool DEBUGGING_FLAG = false;
 
 unsigned TREPORT = 100;
-unsigned DREPORT = 50000;
+unsigned DREPORT = 10000;
 
 dynet::Dict sd;
 dynet::Dict td;
@@ -41,9 +41,11 @@ typedef vector<SentencePair> Corpus;
 
 #define LOLCAT(expression) \
 	WTF(expression) \
-	KTHXBYE(expression) 
+	KTHXBYE(expression)
 
-void Initialise(Model &model, const string &filename);
+void Load_Vocabs(const string& src_vocab_file, const string& trg_vocab_file);
+
+void Initialise(ParameterCollection &model, const string &filename);
 
 inline size_t Calc_Size(const Sentence & src, const Sentence & trg);
 inline size_t Create_MiniBatches(const Corpus& cor
@@ -53,26 +55,40 @@ inline size_t Create_MiniBatches(const Corpus& cor
 	, std::vector<size_t> & train_ids_minibatch);
 
 template <class AM_t>
-void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel, 
-	Trainer &sgd, string out_file, bool curriculum, int max_epochs, int lr_epochs,
-	bool doco, float coverage, bool display, bool fert, float fert_weight);
+void TrainModel(ParameterCollection &model, AM_t &am, Corpus &training, Corpus &devel, 
+	Trainer &sgd, 
+	string out_file, 
+	bool curriculum, 
+	unsigned max_epochs, unsigned patience,
+	unsigned lr_epochs, float lr_eta_decay, unsigned lr_patience,
+	bool doco, 
+	float coverage, 
+	bool display, 
+	bool fert, float fert_weight);
 template <class AM_t>
-void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel, 
-	Trainer &sgd, string out_file, bool curriculum, int max_epochs, int lr_epochs,
-	bool doco, float coverage, bool display, bool fert, float fert_weight);
+void TrainModel_Batch(ParameterCollection &model, AM_t &am, Corpus &training, Corpus &devel, 
+	Trainer &sgd, 
+	string out_file, 
+	bool curriculum, 
+	unsigned max_epochs, unsigned patience, 
+	unsigned lr_epochs, float lr_eta_decay, unsigned lr_patience,
+	bool doco, 
+	float coverage, 
+	bool display, 
+	bool fert, float fert_weight);
 
-template <class AM_t> void Test_Rescore(Model &model
+template <class AM_t> void Test_Rescore(ParameterCollection &model
 	, AM_t &am
 	, Corpus &testing
 	, bool doco);
-template <class AM_t> void Test_Decode(Model &model
+template <class AM_t> void Test_Decode(ParameterCollection &model
 	//, AM_t &am
 	, std::vector<std::shared_ptr<AM_t>>& ams
 	, std::string test_file
 	, bool doco
 	, unsigned beam
 	, bool r2l_target=false);
-template <class AM_t> void Test_Decode_Nbest(Model &model
+template <class AM_t> void Test_Decode_Nbest(ParameterCollection &model
 	//, AM_t &am
 	, std::vector<std::shared_ptr<AM_t>>& ams
 	, string test_file
@@ -80,12 +96,12 @@ template <class AM_t> void Test_Decode_Nbest(Model &model
 	, unsigned nbest_size
 	, bool print_nbest_scores
 	, bool r2l_target=false);
-template <class AM_t> void Test_Kbest_Arcs(Model &model, AM_t &am, string test_file, unsigned top_k);
-template <class AM_t> void Show_Fert_Stats(Model &model, AM_t &am, Corpus &devel, bool global_fert);
+template <class AM_t> void Test_Kbest_Arcs(ParameterCollection &model, AM_t &am, string test_file, unsigned top_k);
+template <class AM_t> void Show_Fert_Stats(ParameterCollection &model, AM_t &am, Corpus &devel, bool global_fert);
 
 template <class AM_t> void LoadEnsembleModels(const string& conf_file
 	, std::vector<std::shared_ptr<AM_t>>& ams
-	, std::vector<std::shared_ptr<Model>>& mods);
+	, std::vector<std::shared_ptr<dynet::ParameterCollection>>& mods);
 
 const Sentence* GetContext(const Corpus &corpus, unsigned i);
 
@@ -101,7 +117,8 @@ template <class rnn_t>
 int main_body(variables_map vm);
 
 int main(int argc, char** argv) {
-	dynet::initialize(argc, argv);
+	auto dyparams = dynet::extract_dynet_params(argc, argv);
+	dynet::initialize(dyparams);	
 
 	// command line processing
 	variables_map vm; 
@@ -110,11 +127,12 @@ int main(int argc, char** argv) {
 		("help", "print help message")
 		("config,c", value<string>(), "config file specifying additional command line options")
 		//-----------------------------------------
-		("train,t", value<vector<string>>(), "file containing training sentences, with "
-			"each line consisting of source ||| target.")		
+		("train,t", value<vector<string>>(), "file containing training sentences, with each line consisting of source ||| target.")		
 		("devel,d", value<string>(), "file containing development sentences.")
 		("test,T", value<string>(), "file containing testing sentences")
-		("slen_limit", value<unsigned>()->default_value(0), "limit the sentence length (either source or target); no by default")
+		("slen_limit", value<unsigned>()->default_value(0), "limit the sentence length (either source or target); none by default")
+		("src_vocab", value<string>()->default_value(""), "file containing source vocabulary file; none by default (will be built from train file); none by default")
+		("trg_vocab", value<string>()->default_value(""), "file containing target vocabulary file; none by default (will be built from train file); none by default")
 		//-----------------------------------------
 		("rescore,r", "rescore (source, target) pairs in testing, default: translate source only")
 		("beam,b", value<unsigned>()->default_value(1), "size of beam in decoding; 1: greedy")
@@ -144,18 +162,19 @@ int main(int argc, char** argv) {
 		("dropout_dec", value<float>()->default_value(0.f), "use dropout (Gal et al., 2016) for RNN decoder, e.g., 0.5 (input=0.5;hidden=0.5;cell=0.5) for LSTM; none by default")
 		//-----------------------------------------
 		("topk,k", value<unsigned>()->default_value(100), "use <num> top kbest entries, used with --kbest")
-		("epochs,e", value<int>()->default_value(20), "maximum number of training epochs")
+		("epochs,e", value<unsigned>()->default_value(20), "maximum number of training epochs")
+		("patience", value<unsigned>()->default_value(0), "no. of times in which the model has not been improved for early stopping; default none")
 		//-----------------------------------------
 		("lr_eta", value<float>()->default_value(0.01f), "SGD learning rate value (e.g., 0.1 for simple SGD trainer or smaller 0.001 for ADAM trainer)")
 		("lr_eta_decay", value<float>()->default_value(2.0f), "SGD learning rate decay value")
 		//-----------------------------------------
-		("lr_epochs", value<int>()->default_value(0), "no. of epochs for starting learning rate annealing (e.g., halving)")
+		("lr_epochs", value<unsigned>()->default_value(0), "no. of epochs for starting learning rate annealing (e.g., halving)") // learning rate scheduler 1
+		("lr_patience", value<unsigned>()->default_value(0), "no. of times in which the model has not been improved, e.g., for starting learning rate annealing (e.g., halving)") // learning rate scheduler 2 (which normally works better than learning rate scheduler 1, e.g., 1-2 BLEU scores better on Multi30K dataset)
 		//-----------------------------------------
 		("r2l_target", "use right-to-left direction for target during training; default not")
 		//-----------------------------------------
 		("gru", "use Gated Recurrent Unit (GRU) for recurrent structure; default RNN")
-		("lstm", "use Long Short Term Memory (LSTM) for recurrent structure; default RNN")
-		("vlstm", "use Vanilla Long Short Term Memory (VLSTM) for recurrent structure; default RNN")
+		("lstm", "use Vanilla Long Short Term Memory (LSTM) for recurrent structure; default RNN")
 		("dglstm", "use Depth-Gated Long Short Term Memory (DGLSTM) (Kaisheng et al., 2015; https://arxiv.org/abs/1508.03790) for recurrent structure; default RNN")
 		//-----------------------------------------
 		("bidirectional", "use bidirectional recurrent hidden states as source embeddings, rather than word embeddings")
@@ -196,15 +215,16 @@ int main(int argc, char** argv) {
 
 	cerr << "PID=" << ::getpid() << endl;
 	
-	if (vm.count("help") || vm.count("train") != 1 || (vm.count("devel") != 1 && !(vm.count("test") == 0 || vm.count("kbest") == 0 || vm.count("fert-stats") == 0))) {
+	if (vm.count("help") 
+		|| vm.count("train") != 1
+		|| (vm.count("devel") != 1 && !(vm.count("test") == 0 || vm.count("kbest") == 0 || vm.count("fert-stats") == 0)))
+	{
 		cout << opts << "\n";
 		return 1;
 	}
 
 	if (vm.count("lstm"))
 		return main_body<LSTMBuilder>(vm);
-	else if (vm.count("vlstm"))
-		return main_body<VanillaLSTMBuilder>(vm);
 	else if (vm.count("dglstm"))
 		return main_body<DGLSTMBuilder>(vm);
 	else if (vm.count("gru"))
@@ -217,11 +237,6 @@ template <class rnn_t>
 int main_body(variables_map vm)
 {
 	DEBUGGING_FLAG = vm.count("debug");
-
-	kSRC_SOS = sd.convert("<s>");
-	kSRC_EOS = sd.convert("</s>");
-	kTGT_SOS = td.convert("<s>");
-	kTGT_EOS = td.convert("</s>");
 
 	verbose = vm.count("verbose");
 
@@ -249,12 +264,17 @@ int main_body(variables_map vm)
 	string flavour = "RNN";
 	if (vm.count("lstm"))
 		flavour = "LSTM";
-	else if (vm.count("vlstm"))
-		flavour = "VanillaLSTM";
 	else if (vm.count("dglstm"))
 		flavour = "DGLSTM";
 	else if (vm.count("gru"))
 		flavour = "GRU";
+
+	// load fixed vocabularies from files if required	
+	Load_Vocabs(vm["src_vocab"].as<string>(), vm["trg_vocab"].as<string>());
+	kSRC_SOS = sd.convert("<s>");
+	kSRC_EOS = sd.convert("</s>");
+	kTGT_SOS = td.convert("<s>");
+	kTGT_EOS = td.convert("</s>");
 
 	Corpus training, devel, testing;
 	vector<string> train_paths = vm["train"].as<vector<string>>();// to handle multiple training data
@@ -263,10 +283,12 @@ int main_body(variables_map vm)
 	//training = Read_Corpus(vm["train"].as<string>(), doco, true, vm["slen_limit"].as<unsigned>(), r2l_target & !swap, vm["eos_padding"].as<unsigned>());
 	cerr << "Reading training data from " << train_paths[0] << "...\n";
 	training = Read_Corpus(train_paths[0], doco, true, vm["slen_limit"].as<unsigned>(), r2l_target & !swap, vm["eos_padding"].as<unsigned>());
-	kSRC_UNK = sd.convert("<unk>");// add <unk> if does not exist!
-	kTGT_UNK = td.convert("<unk>");
-	sd.freeze(); // no new word types allowed
-	td.freeze(); // no new word types allowed
+	if ("" == vm["src_vocab"].as<string>() 
+		&& "" == vm["trg_vocab"].as<string>()) // if not using external vocabularies
+	{
+		sd.freeze(); // no new word types allowed
+		td.freeze(); // no new word types allowed
+	}
 	if (train_paths.size() == 2)// incremental training
 	{
 		training.clear();// use the next training corpus instead!	
@@ -275,6 +297,13 @@ int main_body(variables_map vm)
 		cerr << "Performing incremental training..." << endl;
 	}
 
+	// set up <s>, </s>, <unk> ids
+	sd.set_unk("<unk>");
+	td.set_unk("<unk>");
+	kSRC_UNK = sd.get_unk_id();
+	kTGT_UNK = td.get_unk_id();
+
+	// vocabulary sizes
 	SRC_VOCAB_SIZE = sd.size();
 	TGT_VOCAB_SIZE = td.size();
 
@@ -349,7 +378,7 @@ int main_body(variables_map vm)
 	if (!vm.count("test") && !vm.count("kbest")) // training phase
 		cerr << "Parameters will be written to: " << fname << endl;
 
-	Model model;
+	ParameterCollection model;
 	Trainer* sgd = nullptr;
 	if (!vm.count("test") && !vm.count("kbest") && !vm.count("fert-stats")){
 		unsigned sgd_type = vm["sgd_trainer"].as<unsigned>();
@@ -369,7 +398,6 @@ int main_body(variables_map vm)
 			sgd = new SimpleSGDTrainer(model, vm["lr_eta"].as<float>());
 		else
 	   	assert("Unknown SGD trainer type! (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam)");
-		sgd->eta_decay = vm["lr_eta_decay"].as<float>();
 		sgd->clip_threshold = vm["g_clip_threshold"].as<float>();// * MINIBATCH_SIZE;// use larger gradient clipping threshold if training with mini-batching???
 		sgd->sparse_updates_enabled = vm["sparse_updates"].as<bool>();
 		if (!sgd->sparse_updates_enabled)
@@ -378,12 +406,12 @@ int main_body(variables_map vm)
 
 	// FIXME: to support different models with different RNN structures?
 	std::vector<std::shared_ptr<AttentionalModel<rnn_t>>> v_ams;
-	std::vector<std::shared_ptr<Model>> v_mods;
+	std::vector<std::shared_ptr<ParameterCollection>> v_mods;
 	std::shared_ptr<AttentionalModel<rnn_t>> pam(nullptr);// for training only
 	if (vm.count("ensemble_conf"))//ensemble decoding
 		LoadEnsembleModels(vm["ensemble_conf"].as<string>(), v_ams, v_mods);
 	else{
-		cerr << "%% Using " << flavour << " recurrent units" << endl;
+		cerr << endl << "%% Using " << flavour << " recurrent units" << endl;
 		
 		//AttentionalModel<rnn_t> am(&model, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE
 		//	, SLAYERS, TLAYERS, HIDDEN_DIM, ALIGN_DIM
@@ -410,17 +438,22 @@ int main_body(variables_map vm)
 
 		if (fert && !add_fert) pam->Add_Global_Fertility_Params(&model, HIDDEN_DIM, bidir);// training phase: add extra global fertility parameters to already-initialized model parameters
 
-		cerr << "Count of model parameters: " << model.parameter_count() << endl << endl;
+		cerr << endl << "Count of model parameters: " << model.parameter_count() << endl;
 
 		v_ams.push_back(pam);
 	}
 
+	unsigned lr_epochs = vm["lr_epochs"].as<unsigned>(), lr_patience = vm["lr_patience"].as<unsigned>();
+	if (lr_epochs > 0 && lr_patience > 0)
+		cerr << "[WARNING] - Conflict on learning rate scheduler; use either lr_epochs or lr_patience!" << endl;
+
 	if (!vm.count("test") && !vm.count("kbest") && !vm.count("fert-stats"))
-		TrainModel_Batch(model, *v_ams[0], training, devel, *sgd, fname, vm.count("curriculum"),
-		vm["epochs"].as<int>(), vm["lr_epochs"].as<int>()
-		, doco, vm["coverage"].as<float>()
-		, vm.count("display")
-		, fert, vm["fert-weight"].as<float>());
+		TrainModel_Batch(model, *v_ams[0], training, devel, *sgd, fname, vm.count("curriculum")
+			, vm["epochs"].as<unsigned>(), vm["patience"].as<unsigned>()
+			, lr_epochs, vm["lr_eta_decay"].as<float>(), lr_patience
+			, doco, vm["coverage"].as<float>()
+			, vm.count("display")
+			, fert, vm["fert-weight"].as<float>());
 	else if (vm.count("kbest"))
 		Test_Kbest_Arcs(model, *v_ams[0], vm["kbest"].as<string>(), vm["topk"].as<unsigned>());
 	else if (vm.count("test")) {
@@ -465,7 +498,7 @@ int main_body(variables_map vm)
 }
 
 template <class AM_t>
-void Test_Rescore(Model &model, AM_t &am, Corpus &testing, bool doco)
+void Test_Rescore(ParameterCollection &model, AM_t &am, Corpus &testing, bool doco)
 {
 	//double tloss = 0;
 	//int tchars = 0;
@@ -504,8 +537,8 @@ void Test_Rescore(Model &model, AM_t &am, Corpus &testing, bool doco)
 }
 
 template <class AM_t>
-//void Test_Decode(Model &model, AM_t &am, string test_file, bool doco, unsigned beam, bool r2l_target)
-void Test_Decode(Model &model, std::vector<std::shared_ptr<AM_t>>& ams, string test_file, bool doco, unsigned beam, bool r2l_target)
+//void Test_Decode(ParameterCollection &model, AM_t &am, string test_file, bool doco, unsigned beam, bool r2l_target)
+void Test_Decode(ParameterCollection &model, std::vector<std::shared_ptr<AM_t>>& ams, string test_file, bool doco, unsigned beam, bool r2l_target)
 {
 	int lno = 0;
 
@@ -515,7 +548,7 @@ void Test_Decode(Model &model, std::vector<std::shared_ptr<AM_t>>& ams, string t
 
 	cerr << "Reading test examples from " << test_file << endl;
 
-	Timer timer_dec("completed in");
+	MyTimer timer_dec("completed in");
 
 	ifstream in(test_file);
 	assert(in);
@@ -585,7 +618,7 @@ void Test_Decode(Model &model, std::vector<std::shared_ptr<AM_t>>& ams, string t
 }
 
 template <class AM_t>
-void Test_Decode_Nbest(Model &model
+void Test_Decode_Nbest(ParameterCollection &model
 		//, AM_t &am
 		, std::vector<std::shared_ptr<AM_t>>& ams
 		, string test_file
@@ -600,7 +633,7 @@ void Test_Decode_Nbest(Model &model
 
 	cerr << "Reading test examples from " << test_file << endl;
 	
-	Timer timer_dec("completed in");
+	MyTimer timer_dec("completed in");
 	
 	ifstream in(test_file);
 	assert(in);
@@ -702,7 +735,7 @@ void Test_Decode_Nbest(Model &model
 }
 
 template <class AM_t>
-void Test_Kbest_Arcs(Model &model, AM_t &am, string test_file, unsigned top_k)
+void Test_Kbest_Arcs(ParameterCollection &model, AM_t &am, string test_file, unsigned top_k)
 {
 	// only suitable for monolingual setting, of predicting a sentence given preceeding sentence
 	cerr << "Reading test examples from " << test_file << endl;
@@ -791,7 +824,7 @@ void Test_Kbest_Arcs(Model &model, AM_t &am, string test_file, unsigned top_k)
 }
 
 template <class AM_t> 
-void Show_Fert_Stats(Model &model, AM_t &am, Corpus &devel, bool global_fert)
+void Show_Fert_Stats(ParameterCollection &model, AM_t &am, Corpus &devel, bool global_fert)
 {
 	Sentence ssent, tsent;
 	int docid;
@@ -815,7 +848,7 @@ void Show_Fert_Stats(Model &model, AM_t &am, Corpus &devel, bool global_fert)
 
 template <class AM_t> void LoadEnsembleModels(const string& conf_file
 	, std::vector<std::shared_ptr<AM_t>>& ams
-	, std::vector<std::shared_ptr<Model>>& mods)
+	, std::vector<std::shared_ptr<ParameterCollection>>& mods)
 {
 	cerr << "Loading multiple models..." << endl;	
 
@@ -844,7 +877,7 @@ template <class AM_t> void LoadEnsembleModels(const string& conf_file
 		string model_file;
 		ss >> sl >> tl >> hd >> ad >> bidir >> giza_pos >> giza_markov >> giza_fert >> glo_fert;
 		ss >> model_file;
-		mods[i].reset(new Model());
+		mods[i].reset(new ParameterCollection());
 		ams[i].reset(new AM_t(mods[i].get(), SRC_VOCAB_SIZE, TGT_VOCAB_SIZE
 			, sl, tl, hd, ad
 			, bidir
@@ -861,9 +894,16 @@ template <class AM_t> void LoadEnsembleModels(const string& conf_file
 }
 
 template <class AM_t>
-void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel, 
-	Trainer &sgd, string out_file, bool curriculum, int max_epochs, int lr_epochs
-		, bool doco, float cov_weight, bool display, bool fert, float fert_weight)
+void TrainModel(ParameterCollection &model, AM_t &am, Corpus &training, Corpus &devel, 
+	Trainer &sgd, 
+	string out_file, 
+	bool curriculum, 
+	unsigned max_epochs, unsigned patience, 
+	unsigned lr_epochs, float lr_eta_decay, unsigned lr_patience,
+	bool doco, 
+	float cov_weight, 
+	bool display,
+	bool fert, float fert_weight)
 {
 	double best_loss = 9e+99;
 	
@@ -921,13 +961,18 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 
 		return;
 	}
+	
+	if (curriculum) {// for curriculum learning
+		order = order_by_length[epoch];
+		cerr << "Curriculum learning, with " << order.size() << " examples\n";
+	} 
 
-	cerr << "**SHUFFLE\n";
+	cerr << endl << "**SHUFFLE\n";
 	shuffle(order.begin(), order.end(), *rndeng);
 
-	Timer timer_epoch("completed in"), timer_iteration("completed in");
-
-	while (sgd.epoch < max_epochs) {
+	MyTimer timer_epoch("completed in"), timer_iteration("completed in");
+	unsigned cpt = 0;// count of patience
+	while (epoch < max_epochs) {
 		double cov_penalty = 0.f;
 		double loss_fert = 0.f;
 		ModelStats tstats;
@@ -937,25 +982,26 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 		for (unsigned iter = 0; iter < report_every_i; ++iter) {
 			if (si == training.size()) {
 				//timing
-				cerr << "***Epoch " << sgd.epoch << " is finished. ";
+				cerr << "***Epoch " << epoch << " is finished. ";
 				timer_epoch.show();
+
+				epoch++;
 
 				si = 0;
 
-				if (lr_epochs == 0)
-					sgd.update_epoch(); 
-				else sgd.update_epoch(1, lr_epochs); // @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
+				// learning rate scheduler 1: after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
+				if (lr_epochs > 0 && epoch >= lr_epochs)
+					sgd.learning_rate /= lr_eta_decay;
 
-				if (sgd.epoch >= max_epochs) break;
+				if (epoch >= max_epochs) break;				
+				
+				if (curriculum && epoch < order_by_length.size()) {// for curriculum learning
+					order = order_by_length[epoch];
+					cerr << "Curriculum learning, with " << order.size() << " examples\n";
+				} 
 
 				cerr << "**SHUFFLE\n";
 				shuffle(order.begin(), order.end(), *rndeng);
-
-				// for curriculum learning
-				if (curriculum && epoch < order_by_length.size()) {
-					order = order_by_length[epoch++];
-					cerr << "Curriculum learning, with " << order.size() << " examples\n";
-				} 
 
 				timer_epoch.reset();
 			}
@@ -1042,7 +1088,7 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			}
 		}
 
-		if (sgd.epoch >= max_epochs) continue;
+		if (epoch >= max_epochs) continue;
 	
 		sgd.status();
 		double elapsed = timer_iteration.elapsed();
@@ -1067,20 +1113,37 @@ void TrainModel(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 				auto i_xent = am.BuildGraph(ssent, tsent, cg, dstats, nullptr, (doco) ? GetContext(devel, i) : nullptr, nullptr, nullptr);
 				dstats.loss += as_scalar(cg.forward(i_xent));
 			}
+
 			if (dstats.loss < best_loss) {
 				best_loss = dstats.loss;
 				//ofstream out(out_file, ofstream::out);
 				//boost::archive::text_oarchive oa(out);
 				//oa << model;
 				dynet::save_dynet_model(out_file, &model);// FIXME: use binary streaming instead for saving disk spaces
+				cpt = 0;
 			}
-			//else{
-			//	sgd.eta *= 0.5;
-			//}
+			else cpt++;
 
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
-			cerr << "***DEV [epoch=" << (lines / (double)training.size()) << " eta=" << sgd.eta << "]" << " sents=" << devel.size() << " src_unks=" << dstats.words_src_unk << " trg_unks=" << dstats.words_tgt_unk << " E=" << (dstats.loss / dstats.words_tgt) << " ppl=" << exp(dstats.loss / dstats.words_tgt) << ' ';
+			cerr << "***DEV [epoch=" << (lines / (double)training.size()) << " eta=" << sgd.learning_rate << "]" << " sents=" << devel.size() << " src_unks=" << dstats.words_src_unk << " trg_unks=" << dstats.words_tgt_unk << " E=" << (dstats.loss / dstats.words_tgt) << " ppl=" << exp(dstats.loss / dstats.words_tgt) << " ";
+			if (cpt > 0) cerr << "(not improved, best ppl on dev so far = " << exp(best_loss / dstats.words_tgt) << ") ";
 			timer_iteration.show();	
+
+			// learning rate scheduler 2: if the model has not been improved for lr_patience times, decrease the learning rate by lr_eta_decay factor.
+			if (lr_patience > 0 && cpt > 0 && cpt % lr_patience == 0){
+				cerr << "The model has not been improved for " << lr_patience << " times. Decreasing the learning rate..." << endl;
+				sgd.learning_rate /= lr_eta_decay;
+			}
+
+			// another early stopping criterion
+			if (patience > 0 && cpt >= patience)
+			{
+				cerr << "The model has not been improved for " << patience << " times. Stopping now...!" << endl;
+				cerr << "No. of epochs so far: " << epoch << "." << endl;
+				cerr << "Best ppl on dev: " << exp(best_loss / dstats.words_tgt) << endl;
+				cerr << "--------------------------------------------------------------------------------------------------------" << endl;
+				break;
+			}
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 		}
 
@@ -1114,6 +1177,8 @@ inline size_t Create_MiniBatches(const Corpus& cor
 	, std::vector<std::vector<Sentence> > & train_trg_minibatch
 	, std::vector<size_t> & train_ids_minibatch) 
 {
+	cerr << endl << "Creating minibatches for training data (using minibatch_size=" << max_size << ")..." << endl;
+
 	train_src_minibatch.clear();
 	train_trg_minibatch.clear();
 
@@ -1154,15 +1219,27 @@ inline size_t Create_MiniBatches(const Corpus& cor
 // --------------------------------------------------------------------------------------------------------------------------------
 
 template <class AM_t>
-void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel, 
-	Trainer &sgd, string out_file, bool curriculum, int max_epochs, int lr_epochs
-		, bool doco, float cov_weight, bool display, bool fert, float fert_weight)
+void TrainModel_Batch(ParameterCollection &model, AM_t &am, Corpus &training, Corpus &devel, 
+	Trainer &sgd, string out_file, bool curriculum, unsigned max_epochs, unsigned patience
+	, unsigned lr_epochs, float lr_eta_decay, unsigned lr_patience
+	, bool doco, float cov_weight, bool display, bool fert, float fert_weight)
 {
 	if (MINIBATCH_SIZE == 1){
-		TrainModel(model, am, training, devel, sgd, out_file, curriculum, max_epochs, lr_epochs, doco, cov_weight, display, fert, fert_weight);
+		TrainModel(model, 
+				am, 
+				training, devel, 
+				sgd, 
+				out_file, 
+				curriculum, 
+				max_epochs, patience,
+				lr_epochs, lr_eta_decay, lr_patience,
+				doco, 
+				cov_weight, 
+				display, 
+				fert, fert_weight);
 		return;
 	}
-	
+
 	// Create minibatches
 	vector<vector<Sentence> > train_src_minibatch, dev_src_minibatch;
 	vector<vector<Sentence> > train_trg_minibatch, dev_trg_minibatch;
@@ -1202,13 +1279,13 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 	}
 
 	// shuffle minibatches
-	cerr << "***SHUFFLE\n";
+	cerr << endl << "***SHUFFLE\n";
 	std::shuffle(train_ids_minibatch.begin(), train_ids_minibatch.end(), *dynet::rndeng);
 
 	unsigned sid = 0, id = 0, last_print = 0;
-	Timer timer_epoch("completed in"), timer_iteration("completed in");
-	
-	while (sgd.epoch < max_epochs) {
+	MyTimer timer_epoch("completed in"), timer_iteration("completed in");
+	unsigned epoch = 0, cpt = 0/*count of patience*/;
+	while (epoch < max_epochs) {
 		double cov_penalty = 0;
 		double loss_fert = 0;
 		ModelStats tstats;
@@ -1218,18 +1295,20 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 		for (unsigned iter = 0; iter < dev_every_i_reports;) {
 			if (id == train_ids_minibatch.size()) { 
 				//timing
-				cerr << "***Epoch " << sgd.epoch << " is finished. ";
+				cerr << "***Epoch " << epoch << " is finished. ";
 				timer_epoch.show();
+
+				epoch++;
 
 				id = 0;
 				sid = 0;
 				last_print = 0;
 
-				if (lr_epochs == 0)
-					sgd.update_epoch(); 
-				else sgd.update_epoch(1, lr_epochs); // @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
+				// learning rate scheduler 1: after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
+				if (lr_epochs > 0 && epoch >= lr_epochs)
+					sgd.learning_rate /= lr_eta_decay; 
 
-				if (sgd.epoch >= max_epochs) break;
+				if (epoch >= max_epochs) break;
 
 				// Shuffle the access order
 				cerr << "***SHUFFLE\n";
@@ -1298,7 +1377,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			iter += train_trg_minibatch[train_ids_minibatch[id]].size();
 
 			if (sid / report_every_i != last_print 
-					|| iter >= dev_every_i_reports /*|| sgd.epoch >= max_epochs*/ 
+					|| iter >= dev_every_i_reports /*|| epoch >= max_epochs*/ 
 					|| id + 1 == train_ids_minibatch.size()){
 				last_print = sid / report_every_i;
 
@@ -1313,7 +1392,7 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 					cerr << "fert_ppl=" << exp(loss_fert / tstats.words_src) << ' ';	  
 				cerr /*<< "time_elapsed=" << elapsed*/ << "(" << tstats.words_tgt * 1000 / elapsed << " words/sec)" << endl;  
 
-				//if (sgd.epoch >= max_epochs) break;
+				//if (epoch >= max_epochs) break;
 			}
 			   		 
 			++id;
@@ -1333,23 +1412,38 @@ void TrainModel_Batch(Model &model, AM_t &am, Corpus &training, Corpus &devel,
 			auto i_xent = am.BuildGraph(ssent, tsent, cg, dstats, nullptr, (doco) ? GetContext(devel, i) : nullptr, nullptr, nullptr);
 			dstats.loss += as_scalar(cg.forward(i_xent));
 		}
-
+		
 		if (dstats.loss < best_loss) {
 			best_loss = dstats.loss;
 			//ofstream out(out_file, ofstream::out);
 			//boost::archive::text_oarchive oa(out);
 			//oa << model;
 			dynet::save_dynet_model(out_file, &model);// FIXME: use binary streaming instead for saving disk spaces
+			cpt = 0;
 		}
-		//else{
-		//	sgd.eta *= 0.5;
-		//}
+		else cpt++;
 
 		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
-		cerr << "***DEV [epoch=" << (float)sgd.epoch + (float)sid/(float)training.size() << " eta=" << sgd.eta << "]" << " sents=" << devel.size() << " src_unks=" << dstats.words_src_unk << " trg_unks=" << dstats.words_tgt_unk << " E=" << (dstats.loss / dstats.words_tgt) << " ppl=" << exp(dstats.loss / dstats.words_tgt) << ' ';
+		cerr << "***DEV [epoch=" << (float)epoch + (float)sid/(float)training.size() << " eta=" << sgd.learning_rate << "]" << " sents=" << devel.size() << " src_unks=" << dstats.words_src_unk << " trg_unks=" << dstats.words_tgt_unk << " E=" << (dstats.loss / dstats.words_tgt) << " ppl=" << exp(dstats.loss / dstats.words_tgt) << ' ';
+		if (cpt > 0) cerr << "(not improved, best ppl on dev so far = " << exp(best_loss / dstats.words_tgt) << ") ";
 		timer_iteration.show();
-		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 
+		// learning rate scheduler 2: if the model has not been improved for lr_patience times, decrease the learning rate by lr_eta_decay factor.
+		if (lr_patience > 0 && cpt > 0 && cpt % lr_patience == 0){
+			cerr << "The model has not been improved for " << lr_patience << " times. Decreasing the learning rate..." << endl;
+			sgd.learning_rate /= lr_eta_decay;
+		}
+
+		// another early stopping criterion
+		if (patience > 0 && cpt >= patience)
+		{
+			cerr << "The model has not been improved for " << patience << " times. Stopping now...!" << endl;
+			cerr << "No. of epochs so far: " << epoch << "." << endl;
+			cerr << "Best ppl on dev: " << exp(best_loss / dstats.words_tgt) << endl;
+			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
+			break;
+		}
+		cerr << "--------------------------------------------------------------------------------------------------------" << endl;
 		timer_iteration.reset();
 	}
 
@@ -1465,7 +1559,26 @@ void Read_Numbered_Sentence_Pair(const std::string& line, std::vector<int>* s, D
 	}
 }
 
-void Initialise(Model &model, const string &filename)
+void Load_Vocabs(const string& src_vocab_file, const string& trg_vocab_file)
+{
+	if ("" == src_vocab_file || "" == trg_vocab_file) return;
+
+	cerr << "Loading vocabularies from files..." << endl;
+	cerr << "Source vocabulary file: " << src_vocab_file << endl;
+	cerr << "Target vocabulary file: " << trg_vocab_file << endl;
+	ifstream if_src_vocab(src_vocab_file), if_trg_vocab(trg_vocab_file);
+	string sword, tword;
+	while (getline(if_src_vocab, sword)) sd.convert(sword);
+	while (getline(if_trg_vocab, tword)) td.convert(tword);
+	
+	cerr << "Source vocabluary: " << sd.size() << endl;
+	cerr << "Target vocabluary: " << td.size() << endl;
+
+	sd.freeze();
+	td.freeze();
+}
+
+void Initialise(ParameterCollection &model, const string &filename)
 {
 	cerr << "Initialising model parameters from file: " << filename << endl;
 	//ifstream in(filename, ifstream::in);

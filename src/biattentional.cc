@@ -75,7 +75,6 @@ int main(int argc, char** argv) {
 		//-----------------------------------------
 		("gru", "use Gated Recurrent Unit (GRU) for recurrent structure; default RNN")
 		("lstm", "use Long Short Term Memory (LSTM) for recurrent structure; default RNN")
-		("vlstm", "use Vanilla Long Short Term Memory (VLSTM) for recurrent structure; default RNN")
 		("dglstm", "use Depth-Gated Long Short Term Memory (DGLSTM) (Kaisheng et al., 2015; https://arxiv.org/abs/1508.03790) for recurrent structure; default RNN") // FIXME: add this to dynet?
 		//-----------------------------------------
 		("epochs,e", value<unsigned>()->default_value(20), "maximum number of training epochs")
@@ -117,8 +116,6 @@ int main(int argc, char** argv) {
 
 	if (vm.count("lstm"))
 		return main_body<LSTMBuilder>(vm);
-	else if (vm.count("vlstm"))
-		return main_body<VanillaLSTMBuilder>(vm);
 	else if (vm.count("dglstm"))
 		return main_body<DGLSTMBuilder>(vm);
 	else if (vm.count("gru"))
@@ -197,7 +194,7 @@ int main_body(variables_map vm)
 
 	double best = 9e+99;
 
-	Model model;
+	ParameterCollection model;
 	Trainer* sgd = nullptr;
 	unsigned sgd_type = vm["sgd_trainer"].as<unsigned>();
 	if (sgd_type == 1)
@@ -212,7 +209,7 @@ int main_body(variables_map vm)
 		sgd = new SimpleSGDTrainer(model, vm["lr_eta"].as<float>());
 	else
 		assert("Unknown SGD trainer type! (0: vanilla SGD; 1: momentum SGD; 2: Adagrad; 3: AdaDelta; 4: Adam)");
-	sgd->eta_decay = vm["lr_eta_decay"].as<float>();
+	float lr_eta_decay = vm["lr_eta_decay"].as<float>();
 	sgd->sparse_updates_enabled = vm["sparse_updates"].as<bool>();
 	if (!sgd->sparse_updates_enabled)
 		cerr << "Sparse updates for lookup parameter(s) to be disabled!" << endl;
@@ -230,10 +227,7 @@ int main_body(variables_map vm)
 		vector<string> init_files = vm["initialise"].as<vector<string>>();
 		if (init_files.size() == 1) {
 			cerr << "Parameters will be loaded from: " << init_files[0] << endl;
-
-			ifstream in(init_files[0]);
-			boost::archive::text_iarchive ia(in);
-			ia >> model;
+			dynet::load_dynet_model(init_files[0], &model);
 		} else if (init_files.size() == 2) {
 			cerr << "initialising from " << init_files[0] << " and " << init_files[1] << endl;
 			bam.Initialise(init_files[0], init_files[1], model);
@@ -396,24 +390,26 @@ int main_body(variables_map vm)
 	for (unsigned i = 0; i < order.size(); ++i) order[i] = i;
 	int report = 0;
 	unsigned lines = 0;
-	unsigned epochs = vm["epochs"].as<unsigned>(), lr_epochs = vm["lr_epochs"].as<unsigned>();
-	Timer timer_epoch("completed in"), timer_iteration("completed in");
-	while (sgd->epoch < epochs) {
+	unsigned epoch = 0, max_epochs = vm["epochs"].as<unsigned>(), lr_epochs = vm["lr_epochs"].as<unsigned>();
+	MyTimer timer_epoch("completed in"), timer_iteration("completed in");	
+	while (epoch < max_epochs) {
 		double loss = 0, loss_s2t = 0, loss_t2s = 0, loss_trace = 0;
 		unsigned chars_s = 0, chars_t = 0, chars_tt = 0;
 		for (unsigned i = 0; i < report_every_i; ++i) {
 			if (si == training.size()) {
 				//timing
-				cerr << "***Epoch " << sgd->epoch << " is finished. ";
+				cerr << "***Epoch " << epoch << " is finished. ";
 				timer_epoch.show();
 
 				si = 0;
 
-				if (lr_epochs == 0)
-					sgd->update_epoch(); 
-				else sgd->update_epoch(1, lr_epochs); // @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of eta_decay.
+				epoch++;
 
-				if (sgd->epoch >= epochs) break;
+				// dynet v2
+				if (lr_epochs > 0 && epoch >= lr_epochs)
+					 sgd->learning_rate /= lr_eta_decay; // @vhoang2: learning rate annealing (after lr_epochs, for every next epoch, the learning rate will be decreased by a factor of lr_eta_decay.
+
+				if (epoch >= max_epochs) break;
 
 				cerr << "**SHUFFLE\n";
 				shuffle(order.begin(), order.end(), *rndeng);
@@ -435,7 +431,7 @@ int main_body(variables_map vm)
 			loss_t2s += as_scalar(cg.get_value(bam.t2s_xent.i));
 			loss_trace += as_scalar(cg.get_value(bam.trace_bonus.i));
 			cg.backward(iloss);
-			sgd->update(1.0f);
+			sgd->update();
 
 			++lines;
 
@@ -451,7 +447,7 @@ int main_body(variables_map vm)
 			}
 		}
 
-		if (sgd->epoch >= epochs) continue;
+		if (epoch >= max_epochs) continue;
 
 		sgd->status();
 		cerr << " E=" << (loss / (chars_s + chars_t)) << " ppl=" << exp(loss / (chars_s + chars_t)) << ' '; // FIXME: kind of hacky, as trace should be normalised differently
@@ -489,7 +485,7 @@ int main_body(variables_map vm)
 			}
 
 			cerr << "--------------------------------------------------------------------------------------------------------" << endl;
-			cerr << "***DEV [epoch=" << (lines / (double)training.size()) << " eta=" << sgd->eta << "]";
+			cerr << "***DEV [epoch=" << (lines / (double)training.size()) << " eta=" << sgd->learning_rate << "]";
 			cerr << " sents=" << dev.size() << " E=" << (dloss / (dchars_s + dchars_t)) << " ppl=" << exp(dloss / (dchars_s + dchars_t)) << ' '; // FIXME: kind of hacky, as trace should be normalised differently
 			cerr << " ppl_t2s=" << exp(dloss_t2s / dchars_s) << ' ';
 			cerr << " ppl_s2t=" << exp(dloss_s2t / dchars_t) << ' ';

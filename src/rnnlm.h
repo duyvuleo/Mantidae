@@ -35,7 +35,6 @@
 
 using namespace std;
 using namespace dynet;
-using namespace dynet::expr;
 
 /**
  * \ingroup lmbuilders
@@ -92,8 +91,8 @@ protected:
 	//Builder rnn;
 	BuilderPtr rnn_;
 
-	// Model pointer
-	Model* pmodel_ = nullptr;
+	// ParameterCollection pointer
+	ParameterCollection* pmodel_ = nullptr;
 
 public:
 	/**
@@ -107,7 +106,7 @@ public:
 	*/
 	explicit RNNLanguageModel(){}
 
-	explicit RNNLanguageModel(Model* model,
+	explicit RNNLanguageModel(ParameterCollection* model,
 		unsigned layers,
 		unsigned input_dim,
 		unsigned hidden_dim,
@@ -123,7 +122,7 @@ public:
 		pmodel_ = model;
 	}
 
-	void CreateModel(Model* model,
+	void CreateModel(ParameterCollection* model,
 		unsigned layers,
 		unsigned input_dim,
 		unsigned hidden_dim,
@@ -145,12 +144,11 @@ public:
 		pmodel_ = model;
 	}
 
-	void LoadModel(Model* model, const std::string& model_file){
+	void LoadModel(ParameterCollection* model, const std::string& model_file){
 		cerr << "Loading model from: " << model_file << endl;
 
-		ifstream in(model_file);
+		ifstream in(model_file + ".cfg");
 		boost::archive::text_iarchive ia(in);
-
 		ia >> layers_ >> input_dim_ >> hidden_dim_ >> vocab_size_ >> dropout_p >> reverse_;
 
 		// Add embedding parameters to the model
@@ -159,16 +157,18 @@ public:
 		p_bias_ = model->add_parameters({vocab_size_});
 		rnn_ = BuilderPtr(new Builder(layers_, input_dim_, hidden_dim_, *model)); 
 		pmodel_ = model;
-
-		ia >> *pmodel_;
+		
+		dynet::load_dynet_model(model_file, pmodel_);// FIXME: use binary streaming instead for saving disk spaces
 	}
 
 	// an alternative of << operator
 	void SaveModel(const std::string& model_file){
-		ofstream out(model_file);
+		ofstream out(model_file + ".cfg");
 		boost::archive::text_oarchive oa(out);
 		oa << layers_ << input_dim_ << hidden_dim_ << vocab_size_ << dropout_p << reverse_;
-		oa << *pmodel_;
+		
+		// dynet v2
+		dynet::save_dynet_model(model_file, pmodel_);// FIXME: use binary streaming instead for saving disk spaces
 	}
 
 	void DisableDropout(){
@@ -568,19 +568,6 @@ public:
 
 		cerr << endl;
 	}
-
-	/*
-	private:
-	  friend class boost::serialization::access;
-	  template<class Archive>
-	  void serialize(Archive & ar, const unsigned int) {
-		ar & layers_ & input_dim_ & hidden_dim_ & vocab_size_ & dropout_p & reverse_;
-		ar & p_c_ & p_R_ & p_bias_;
-	
-		ar & *rnn_;
-		//ar & *pmodel_;
-	  }
-	*/
 };
 
 }; // namespace dynet
