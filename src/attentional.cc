@@ -117,6 +117,7 @@ template <class rnn_t>
 int main_body(variables_map vm);
 
 int main(int argc, char** argv) {
+	cerr << "*** DyNet initialization ***" << endl;
 	auto dyparams = dynet::extract_dynet_params(argc, argv);
 	dynet::initialize(dyparams);	
 
@@ -216,7 +217,11 @@ int main(int argc, char** argv) {
 	notify(vm);
 
 	cerr << endl << "PID=" << ::getpid() << endl;
-	cerr << ""
+	cerr << "Command: ";
+	for (int i = 0; i < argc; i++){ 
+		cerr << argv[i] << " "; 
+	} 
+	cerr << endl;
 	
 	if (vm.count("help") 
 		|| vm.count("train") != 1
@@ -399,6 +404,7 @@ int main_body(variables_map vm)
 	if (!vm.count("test") && !vm.count("kbest")) // training phase
 		cerr << "Parameters will be written to: " << fname << endl;
 
+	// setup SGD trainer
 	ParameterCollection model;
 	Trainer* sgd = nullptr;
 	if (!vm.count("test") && !vm.count("kbest") && !vm.count("fert-stats")){
