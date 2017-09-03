@@ -21,7 +21,7 @@ unsigned MINIBATCH_SIZE = 1;
 
 bool DEBUGGING_FLAG = false;
 
-unsigned TREPORT = 100;
+unsigned TREPORT = 50;
 unsigned DREPORT = 10000;
 
 dynet::Dict sd;
@@ -131,8 +131,9 @@ int main(int argc, char** argv) {
 		("devel,d", value<string>(), "file containing development sentences.")
 		("test,T", value<string>(), "file containing testing sentences")
 		("slen_limit", value<unsigned>()->default_value(0), "limit the sentence length (either source or target); none by default")
-		("src_vocab", value<string>()->default_value(""), "file containing source vocabulary file; none by default (will be built from train file); none by default")
-		("trg_vocab", value<string>()->default_value(""), "file containing target vocabulary file; none by default (will be built from train file); none by default")
+		("src_vocab", value<string>()->default_value(""), "file containing source vocabulary file; none by default (will be built from train file)")
+		("trg_vocab", value<string>()->default_value(""), "file containing target vocabulary file; none by default (will be built from train file)")
+		("train_percent", value<unsigned>()->default_value(100), "use <num> percent of sentences in training data; full by default")
 		//-----------------------------------------
 		("rescore,r", "rescore (source, target) pairs in testing, default: translate source only")
 		("beam,b", value<unsigned>()->default_value(1), "size of beam in decoding; 1: greedy")
@@ -151,7 +152,7 @@ int main(int argc, char** argv) {
 		("initialise,i", value<string>(), "load initial parameters from file")
 		("parameters,p", value<string>(), "save best parameters to this file")
 		//-----------------------------------------
-		("eos_padding", value<unsigned>()->default_value(0), "impose the </s> padding for all training target instances; none (0) by default")
+		("eos_padding", value<unsigned>()->default_value(0), "impose <num> of </s> padding(s) (at the end) for all training target instances; none (0) by default")
 		//-----------------------------------------
 		("slayers", value<unsigned>()->default_value(SLAYERS), "use <num> layers for source RNN components")
 		("tlayers", value<unsigned>()->default_value(TLAYERS), "use <num> layers for target RNN components")
@@ -205,6 +206,7 @@ int main(int argc, char** argv) {
 		//-----------------------------------------
 		("debug", "enable/disable simpler debugging by immediate computing mode or checking validity (refers to http://dynet.readthedocs.io/en/latest/debugging.html)")// for CPU only
 	;
+	
 	store(parse_command_line(argc, argv, opts), vm); 
 	if (vm.count("config") > 0)
 	{
@@ -213,7 +215,8 @@ int main(int argc, char** argv) {
 	}
 	notify(vm);
 
-	cerr << "PID=" << ::getpid() << endl;
+	cerr << endl << "PID=" << ::getpid() << endl;
+	cerr << ""
 	
 	if (vm.count("help") 
 		|| vm.count("train") != 1
@@ -281,7 +284,7 @@ int main_body(variables_map vm)
 	if (train_paths.size() > 2) assert("Invalid -t or --train parameter. Only maximum 2 training corpora provided!");	
 	//cerr << "Reading training data from " << vm["train"].as<string>() << "...\n";
 	//training = Read_Corpus(vm["train"].as<string>(), doco, true, vm["slen_limit"].as<unsigned>(), r2l_target & !swap, vm["eos_padding"].as<unsigned>());
-	cerr << "Reading training data from " << train_paths[0] << "...\n";
+	cerr << endl << "Reading training data from " << train_paths[0] << "...\n";
 	training = Read_Corpus(train_paths[0], doco, true, vm["slen_limit"].as<unsigned>(), r2l_target & !swap, vm["eos_padding"].as<unsigned>());
 	if ("" == vm["src_vocab"].as<string>() 
 		&& "" == vm["trg_vocab"].as<string>()) // if not using external vocabularies
@@ -296,6 +299,24 @@ int main_body(variables_map vm)
 		training = Read_Corpus(train_paths[1], doco, true/*for training*/, vm["slen_limit"].as<unsigned>(), r2l_target & !swap, vm["eos_padding"].as<unsigned>());
 		cerr << "Performing incremental training..." << endl;
 	}
+
+	// limit the percent of training data to be used
+	unsigned train_percent = vm["train_percent"].as<unsigned>();
+	if (train_percent < 100 
+		&& train_percent > 0)
+	{
+		cerr << "Only use " << train_percent << "% of " << training.size() << " training instances: ";
+		unsigned int rev_pos = train_percent * training.size() / 100;
+		training.erase(training.begin() + rev_pos, training.end());
+		cerr << training.size() << " instances remaining!" << endl;
+	}
+	else if (train_percent != 100){
+		cerr << "Invalid --train_percent <num> used. <num> must be (0,100]" << endl;
+		return EXIT_FAILURE;
+	}
+
+	if (DREPORT >= training.size())
+		cerr << "WARNING: --dreport <num> is too large, <= training data size!" << endl;
 
 	// set up <s>, </s>, <unk> ids
 	sd.set_unk("<unk>");
@@ -1450,7 +1471,13 @@ void TrainModel_Batch(ParameterCollection &model, AM_t &am, Corpus &training, Co
 	cerr << endl << "Training completed!" << endl;
 }
 
-Corpus Read_Corpus(const string &filename, bool doco, bool cid, unsigned slen, bool r2l_target, unsigned eos_padding, bool swap)
+Corpus Read_Corpus(const string &filename, 
+			bool doco, 
+			bool cid, 
+			unsigned slen, 
+			bool r2l_target, 
+			unsigned eos_padding, 
+			bool swap)
 {
 	ifstream in(filename);
 	assert(in);
@@ -1483,7 +1510,7 @@ Corpus Read_Corpus(const string &filename, bool doco, bool cid, unsigned slen, b
 				continue;// ignore this sentence
 		}
 
-		// add additional </s> paddings
+		// add additional </s> paddings at the end of target
 		if (eos_padding > 0)
 		{
 			for (unsigned i = 0; i < eos_padding; i++){
