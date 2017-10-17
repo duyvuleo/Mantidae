@@ -402,10 +402,15 @@ public:
 	// Build the relaxation optimization graph for the given sentence including returned loss
 	void ComputeWordEmbeddingMatrix(ComputationGraph& cg)
 	{
+		/* Simple way		
 		std::vector<Expression> vEs(vocab_size_);
 		for (unsigned i = 0; i < vocab_size_; i++)
 			vEs[i] = lookup(cg, p_c_, i);//hidden_dim x 1
-		i_We_ = concatenate_cols(vEs);/*hidden_dim x vocab_size_*/
+		i_We_ = concatenate_cols(vEs);//hidden_dim x vocab_size_
+		*/
+
+		// More efficient way
+		i_We_ = parameter(cg, p_c_);
 	}
   
 	Expression GetWordEmbeddingVector(const Expression& i_y)

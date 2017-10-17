@@ -66,6 +66,7 @@ struct AttentionalModel {
 		unsigned align_dim, bool _rnn_src_embeddings, bool _giza_positional, 
 		bool _giza_markov, bool _giza_fertility, bool _doc_context,
 		bool _global_fertility,
+		bool shared_embeddings=false,
 		LookupParameter* _p_cs=nullptr, LookupParameter* _p_ct=nullptr);
 
 	~AttentionalModel();
@@ -259,6 +260,7 @@ AttentionalModel<Builder>::AttentionalModel(dynet::ParameterCollection* model,
 	, bool _giza_positional, bool _giza_markov, bool _giza_fertility
 	, bool _doc_context
 	, bool _global_fertility
+	, bool _shared_embeddings
 	, LookupParameter* _p_cs, LookupParameter* _p_ct)
 		: builder(tlayers, (_rnn_src_embeddings) ? 3*hidden_dim : 2*hidden_dim, hidden_dim, *model)
 		, builder_src_fwd(slayers, hidden_dim, hidden_dim, *model)
@@ -274,7 +276,9 @@ AttentionalModel<Builder>::AttentionalModel(dynet::ParameterCollection* model,
 	//std::cerr << "Attentionalmodel(" << _src_vocab_size  << " " <<  _tgt_vocab_size  << " " <<  slayers << " " << tlayers << " " <<  hidden_dim << " " <<  align_dim  << " " <<  _rnn_src_embeddings  << " " <<  _giza_positional << ":" << _giza_markov << ":" << _giza_fertility << ":" << _global_fertility << " " <<  _doc_context << ")\n";
 	
 	p_cs = (_p_cs==nullptr)?model->add_lookup_parameters(src_vocab_size, {hidden_dim}):*_p_cs;
-	p_ct = (_p_ct==nullptr)?model->add_lookup_parameters(tgt_vocab_size, {hidden_dim}):*_p_ct; 
+	if (_shared_embeddings)
+		p_ct = p_cs;
+	else p_ct = (_p_ct==nullptr)?model->add_lookup_parameters(tgt_vocab_size, {hidden_dim}):*_p_ct; 
 	p_R = model->add_parameters({tgt_vocab_size, hidden_dim});
 	p_P = model->add_parameters({hidden_dim, hidden_dim});
 	p_bias = model->add_parameters({tgt_vocab_size});
@@ -1110,19 +1114,29 @@ Expression AttentionalModel<Builder>::Forward(const std::vector<int> & sent, int
 template <class Builder>
 void AttentionalModel<Builder>::ComputeTrgWordEmbeddingMatrix(dynet::ComputationGraph& cg)
 {
+	/* Simple way
 	std::vector<Expression> vEs(tgt_vocab_size);
 	for (unsigned i = 0; i < tgt_vocab_size; i++)
 		vEs[i] = lookup(cg, p_ct, i);//hidden_dim x 1
-	i_We = concatenate_cols(vEs);/*hidden_dim x TGT_VOCAB_SIZE*/
+	i_We = concatenate_cols(vEs);//hidden_dim x TGT_VOCAB_SIZE
+	*/
+
+	// More efficient way
+	i_We = parameter(cg, p_ct);//hidden_dim x TGT_VOCAB_SIZE
 }
 
 template <class Builder>
 void AttentionalModel<Builder>::ComputeSrcWordEmbeddingMatrix(dynet::ComputationGraph& cg)
 {
+	/* Simple way	
 	std::vector<Expression> vEs(src_vocab_size);
 	for (unsigned i = 0; i < src_vocab_size; i++)
 		vEs[i] = lookup(cg, p_cs, i);//hidden_dim x 1
-	i_We = concatenate_cols(vEs);/*hidden_dim x SRC_VOCAB_SIZE*/
+	i_We = concatenate_cols(vEs);//hidden_dim x SRC_VOCAB_SIZE
+	*/
+
+	// More efficient way
+	i_We = parameter(cg, p_cs);//hidden_dim x SRC_VOCAB_SIZE
 }
 
 template <class Builder>
@@ -1833,8 +1847,8 @@ std::string AttentionalModel<Builder>::GetRelOptOutput(dynet::ComputationGraph& 
 		//cerr << "[y]=" << print_vec(v_y_dist) << endl;
 		std::vector<float>::iterator it = std::max_element(v_y_dist.begin(), v_y_dist.end());
 		int index = std::distance(v_y_dist.begin(), it);
-		if (index == ind_eos)// FIXME: early ignorance
-			break;
+		//if (index == ind_eos)// FIXME: early ignorance
+		//	break;
 		ss << d.convert(index) << " ";
 		if (verbose) std::cerr << d.convert(index) << "(" << *it << ")" << " ";// console output
 	}

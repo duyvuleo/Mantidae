@@ -143,6 +143,8 @@ int main(int argc, char** argv) {
 		("kbest,K", value<string>(), "test on kbest inputs using monolingual Markov model")
 		("ensemble_conf", value<string>(), "specify the configuration of different AM models for ensemble decoding")
 		//-----------------------------------------
+		("shared_embeddings", "use shared source and target embeddings (in case that source and target use the same vocabulary; none by default")
+		//-----------------------------------------
 		("minibatch_size", value<unsigned>()->default_value(1), "impose the minibatch size for training (support both GPU and CPU); no by default")
 		("dynet-autobatch", value<unsigned>()->default_value(0), "impose the auto-batch mode (support both GPU and CPU); no by default") //--dynet-autobatch 1		
 		//-----------------------------------------
@@ -451,7 +453,8 @@ int main_body(variables_map vm)
 			, bidir
 			, giza_pos, giza_markov, giza_fert
 			, doco
-			, fert));
+			, fert
+			, vm.count("shared_embeddings")));
 
 		pam->Set_Dropout(vm["dropout_enc"].as<float>(), vm["dropout_dec"].as<float>());
 		
@@ -1268,8 +1271,8 @@ void TrainModel_Batch(ParameterCollection &model, AM_t &am, Corpus &training, Co
 	}
 
 	// Create minibatches
-	vector<vector<Sentence> > train_src_minibatch, dev_src_minibatch;
-	vector<vector<Sentence> > train_trg_minibatch, dev_trg_minibatch;
+	vector<vector<Sentence> > train_src_minibatch;
+	vector<vector<Sentence> > train_trg_minibatch;
 	vector<size_t> train_ids_minibatch, dev_ids_minibatch;
 	size_t minibatch_size = MINIBATCH_SIZE;
 	Create_MiniBatches(training, minibatch_size, train_src_minibatch, train_trg_minibatch, train_ids_minibatch);
